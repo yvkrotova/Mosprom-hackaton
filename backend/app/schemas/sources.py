@@ -1,0 +1,59 @@
+"""Источники видео (камеры, файлы) и их зоны."""
+
+from pydantic import Field
+
+from app.schemas.common import ApiModel, InputModel, Polygon, UtcDatetime
+from app.schemas.enums import SourceKind, SourceStatus
+
+
+class SourceCreate(InputModel):
+    name: str = Field(min_length=1, max_length=200, examples=["Камера 3 — цех штамповки"])
+    kind: SourceKind = SourceKind.FILE
+    uri: str = Field(min_length=1, max_length=2000, description="Путь к файлу или rtsp://...")
+    site: str | None = Field(None, max_length=200, examples=["Цех №2"])
+    analysis_fps: float | None = Field(
+        None, gt=0, le=60, description="Частота анализа кадров; по умолчанию DEFAULT_ANALYSIS_FPS"
+    )
+
+
+class SourceUpdate(InputModel):
+    name: str | None = Field(None, min_length=1, max_length=200)
+    uri: str | None = Field(None, min_length=1, max_length=2000)
+    site: str | None = Field(None, max_length=200)
+    analysis_fps: float | None = Field(None, gt=0, le=60)
+
+
+class SourceOut(ApiModel):
+    id: str
+    name: str
+    kind: SourceKind
+    uri: str
+    site: str | None
+    status: SourceStatus
+    last_error: str | None
+    last_heartbeat_at: UtcDatetime | None
+    analysis_fps: float
+    created_at: UtcDatetime
+    updated_at: UtcDatetime
+
+
+class ZoneCreate(InputModel):
+    name: str = Field(min_length=1, max_length=200, examples=["Зона пресса"])
+    polygon: Polygon = Field(
+        description="Точки [[x, y], ...] в долях кадра 0..1, минимум 3",
+        examples=[[[0.3, 0.4], [0.7, 0.4], [0.7, 0.95], [0.3, 0.95]]],
+    )
+
+
+class ZoneUpdate(InputModel):
+    name: str | None = Field(None, min_length=1, max_length=200)
+    polygon: Polygon | None = None
+
+
+class ZoneOut(ApiModel):
+    id: str
+    source_id: str
+    name: str
+    polygon: list[tuple[float, float]]
+    created_at: UtcDatetime
+    updated_at: UtcDatetime

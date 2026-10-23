@@ -1,0 +1,36 @@
+"""CV-контракт: что детектор (mock, replay-файл, LinQ) отдаёт конвейеру на каждый кадр.
+
+Одна строка JSONL-файла для DETECTOR=replay = один объект FrameDetections.
+Подробности и примеры — docs/CV_CONTRACT.md.
+"""
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from app.schemas.common import BBox, RelCoord
+
+Keypoint = tuple[RelCoord, RelCoord, float]  # x, y в долях кадра; conf 0..1
+
+
+class Detection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    label: str = Field(min_length=1, examples=["person"])
+    confidence: float = Field(ge=0, le=1)
+    bbox: BBox = Field(description="[x1, y1, x2, y2] в долях кадра 0..1")
+    track_id: int | None = Field(None, description="Если модель сама трекает; иначе трекер backend")
+    keypoints: list[Keypoint] | None = Field(None, description="Для поз (fall_immobility)")
+
+
+class FrameDetections(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_id: str | None = Field(
+        None, description="Можно не указывать в replay-файле: конвейер подставит свой source_id"
+    )
+    frame_idx: int = Field(ge=0, description="Номер кадра в исходном видео (с нуля)")
+    video_ts: float = Field(ge=0, description="Время кадра внутри видео, секунды")
+    frame_w: int = Field(gt=0, description="Ширина исходного кадра, пиксели")
+    frame_h: int = Field(gt=0)
+    inference_ms: float = Field(ge=0, description="Чистое время инференса кадра, мс")
+    model_version: str = Field(min_length=1, examples=["yolov8n-linq-int8-2026.10"])
+    detections: list[Detection] = Field(default_factory=list)

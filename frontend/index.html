@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LinQ Safety</title>
+  <meta name="description" content="Видеоконтроль промышленной безопасности на нейроускорителе LinQ" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2310b981' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z'/%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="css/app.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-logo"><i data-icon="shield"></i></div>
+      <div>
+        <div class="brand-name">LinQ <span class="brand-tag">Safety AI</span></div>
+        <div class="brand-sub">Контроль промбезопасности на нейроускорителе</div>
+      </div>
+    </div>
+
+    <div class="telemetry">
+      <span class="chip" id="chip-health" title="Состояние БД и источников"><span class="led"></span><span>Система</span></span>
+      <span class="chip" id="chip-ws" title="Канал тревог (WebSocket)"><i data-icon="wifi"></i><span>Тревоги</span></span>
+      <span class="chip" id="chip-detector" title="Детектор на текущей камере"><i data-icon="cpu"></i><span class="muted">Детектор:</span><b>—</b></span>
+      <span class="chip" id="chip-fps" title="Фактическая скорость обработки"><i data-icon="activity"></i><span class="muted">FPS</span><b>—</b></span>
+      <span class="chip" id="chip-infer" title="Время инференса на кадр: среднее / p95"><i data-icon="zap"></i><span class="muted">Инференс</span><b>—</b></span>
+      <span class="chip" id="chip-delay" title="Задержка оповещения: от подтверждения до тревоги"><i data-icon="bell"></i><span class="muted">Оповещение</span><b>—</b></span>
+    </div>
+
+    <div class="topbar-actions">
+      <button class="chip chip-btn" id="operator-btn" title="Кто подтверждает тревоги"><i data-icon="user"></i><span id="operator-name"></span></button>
+      <div class="sound-wrap">
+        <button class="chip chip-btn" id="sound-btn" aria-haspopup="true"><span id="sound-btn-icon"></span><span id="sound-btn-text">Звук</span></button>
+        <div class="popover" id="sound-popover" hidden>
+          <div class="popover-title">Звуковые оповещения</div>
+          <label class="switch-row"><span>Звук включён</span><input type="checkbox" data-sound="enabled" /></label>
+          <label class="switch-row"><span>Сигнал при входе в зону</span><input type="checkbox" data-sound="entryChime" /></label>
+          <label class="switch-row"><span>Голосовое сообщение</span><input type="checkbox" data-sound="voice" /></label>
+          <label class="switch-row"><span>Повторять, пока нет реакции</span><input type="checkbox" data-sound="repeat" /></label>
+          <label class="range-row"><span>Громкость</span><input type="range" min="0" max="1" step="0.05" data-sound="volume" /></label>
+          <button class="btn btn-sm btn-block" id="sound-test"><i data-icon="volume-2"></i>Проверить звук</button>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <nav class="tabs" role="tablist">
+    <button class="tab active" data-tab="live" role="tab"><i data-icon="video"></i>Наблюдение</button>
+    <button class="tab" data-tab="territory" role="tab"><i data-icon="pen"></i>Территории и правила</button>
+    <button class="tab" data-tab="analytics" role="tab"><i data-icon="chart"></i>Аналитика и отчёты</button>
+    <div class="tabs-spacer"></div>
+    <button class="btn btn-sm" id="upload-btn"><i data-icon="upload"></i>Добавить видео</button>
+  </nav>
+
+  <div id="sound-unlock" class="banner banner-warn" hidden>
+    <i data-icon="volume-x"></i>
+    <span>Браузер заблокировал звук до первого действия на странице. Тревоги будут без звука.</span>
+    <button class="btn btn-sm btn-warn" id="sound-unlock-btn">Включить звук</button>
+  </div>
+  <div id="alarm-banner" class="banner banner-alarm" hidden></div>
+
+  <main>
+    <section id="screen-live" class="screen"></section>
+    <section id="screen-territory" class="screen" hidden></section>
+    <section id="screen-analytics" class="screen" hidden></section>
+  </main>
+
+  <div id="toasts" aria-live="polite"></div>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

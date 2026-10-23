@@ -1,0 +1,453 @@
+# Контракт API backend LinQ Safety
+
+Документ для фронтенда. Интерактивная версия — Swagger UI на `http://localhost:8000/docs`
+(OpenAPI JSON на `/openapi.json`). Если этот файл и OpenAPI расходятся, прав OpenAPI — сообщите нам.
+
+## Общие соглашения
+
+| Что | Как |
+|---|---|
+| Базовый URL REST | `http://localhost:8000/api/v1` |
+| WebSocket | `ws://localhost:8000/ws/events` |
+| Файлы (кадры-доказательства) | `http://localhost:8000/media/...`; в ответах приходят относительные URL вида `/media/evidence/<event_id>/<file>.jpg`, к ним нужно добавить адрес backend |
+| ID | UUID-строки |
+| «Настенное» время | ISO 8601 в UTC с суффиксом `Z`: `2026-10-23T09:15:02.120Z`. В query-параметрах без пояса — считается UTC |
+| Время внутри видео | отдельные поля `video_ts*`, секунды (float) от начала видео |
+| Координаты | доли кадра `0..1`: bbox `[x1, y1, x2, y2]`, полигон `[[x, y], ...]`; `(0,0)` — левый верхний угол |
+| Тело запросов | JSON; неизвестные поля в теле — ошибка 422 |
+| Авторизация | нет (публичный API); внутренний API воркера — не для фронта |
+
+Обновлять экран: при загрузке страницы берите состояние из REST, затем слушайте WS только для новых изменений.
+
+## Перечисления
+
+| Enum | Значения |
+|---|---|
+| `ScenarioType` | `danger_zone` (человек в опасной зоне), `fall_immobility` (падение/неподвижность — **пока не реализован**, в `GET /scenarios` не появляется) |
+| `EpisodeState` | `active` (нарушение продолжается), `ended` (закончилось) |
+| `ReviewStatus` | `unreviewed`, `confirmed`, `false_positive`, `escalated` |
+| `OperatorActionType` | `confirm`, `mark_false`, `escalate`, `comment`, `reset` |
+| `Priority` | `low`, `medium`, `high`, `critical` |
+| `SourceKind` | `file`, `rtsp`, `images` (`images` пока не запускается) |
+| `SourceStatus` | `idle` (ни разу не запускался), `running`, `stopped`, `error`, `disconnected` (нет heartbeat от воркера) |
+| `EvidenceKind` | `frame_raw` (исходный кадр), `frame_annotated` (кадр с рамкой, зоной и подписью), `clip` (видеофрагмент, пока не создаётся) |
+
+`state` и `review_status` — **два независимых поля**. `state` меняет только конвейер, `review_status` — только оператор.
+Событие может быть `active` и уже `confirmed`, или `ended` и всё ещё `unreviewed`.
+
+Статусы `error` и `disconnected` означают «анализ не идёт». Это не то же самое, что «нарушений нет»:
+показывайте их явно.
+
+## Формат ошибок
+
+Все ошибки (400, 401, 404, 405, 409, 413, 415, 422, 500) приходят в одном формате:
+
+```json
+{
+  "error": {
+    "code": "EVENT_NOT_FOUND",
+    "message": "Событие не найдено",
+    "details": {"event_id": "7d3c..."}
+  }
+}
+```
+
+Ориентируйтесь на `code`; `message` можно показывать пользователю. Для ошибок валидации (`VALIDATION_ERROR`)
+`details.errors` — список `{"loc": ["body", "polygon", 0], "msg": "...", "type": "..."}`.
+
+| HTTP | code | Когда |
+|---|---|---|
+| 400 | `BAD_REQUEST` | Некорректный запрос, не подпадающий под другие коды |
+| 401 | `UNAUTHORIZED` | Внутренний API без верного `X-Internal-Token` |
+| 404 | `NOT_FOUND` | Неизвестный путь |
+| 404 | `SOURCE_NOT_FOUND` / `ZONE_NOT_FOUND` / `RULE_NOT_FOUND` / `EVENT_NOT_FOUND` | Объекта с таким id нет |
+| 405 | `METHOD_NOT_ALLOWED` | Метод не поддерживается |
+| 409 | `SOURCE_ALREADY_RUNNING` | `start` для уже запущенного источника |
+| 409 | `SOURCE_RUNNING` | Удаление/изменение `uri` запущенного источника — сначала `stop` |
+| 409 | `INVALID_TRANSITION` | Действие оператора недопустимо из текущего `review_status` |
+| 409 | `EPISODE_ALREADY_ENDED` | (внутренний API) попытка вернуть завершённый эпизод в `active` |
+| 413 | `FILE_TOO_LARGE` | Загружаемое видео больше лимита |
+| 415 | `UNSUPPORTED_MEDIA_TYPE` | Загружен не видеофайл |
+| 422 | `VALIDATION_ERROR` | Тело/параметры не прошли валидацию (в т.ч. полигон: <3 точек, координаты вне 0..1, нулевая площадь) |
+| 422 | `INVALID_VIDEO` | Загруженный файл не читается как видео |
+| 422 | `UNKNOWN_SCENARIO` | `scenario_type` не зарегистрирован |
+| 422 | `INVALID_SCENARIO_PARAMS` | `params` не прошли схему сценария; в `details.errors` — подробности |
+| 422 | `ZONE_SOURCE_MISMATCH` | Зона правила принадлежит другому источнику |
+| 422 | `ZONE_REQUIRED` | Сценарию нужна зона, а у источника нет ни одной |
+| 422 | `UNSUPPORTED_SOURCE_KIND` | Запуск источника вида, который пока не поддержан (`images`) |
+| 422 | `PREVIEW_UNAVAILABLE` | Не удалось получить кадр источника (файл не открылся, поток недоступен) |
+| 500 | `INTERNAL_ERROR` | Непредвиденная ошибка сервера (подробности только в логе сервера) |
+
+---
+
+## Sources — источники видео
+
+### Объект `Source`
+
+```json
+{
+  "id": "0b6f3a52-6a3e-4b8e-9a0f-4f2a8f2f6c11",
+  "name": "Камера 3 — цех штамповки",
+  "kind": "file",
+  "uri": "data/storage/videos/0b6f...mp4",
+  "site": "Цех №2",
+  "status": "running",
+  "last_error": null,
+  "last_heartbeat_at": "2026-10-23T09:15:04.002Z",
+  "analysis_fps": 10.0,
+  "created_at": "2026-10-23T09:00:00.000Z",
+  "updated_at": "2026-10-23T09:15:04.002Z"
+}
+```
+
+### `GET /sources` → `200 Source[]`
+Сортировка по `created_at`.
+
+### `POST /sources` → `201 Source`
+```json
+{"name": "Камера 1", "kind": "rtsp", "uri": "rtsp://10.0.0.5/stream1", "site": "Склад", "analysis_fps": 5}
+```
+`kind` по умолчанию `file`, `analysis_fps` — по умолчанию из настроек сервера (10). Статус нового источника — `idle`.
+
+### `POST /sources/upload` → `201 Source`
+`multipart/form-data`: `file` (видео: mp4, avi, mov, mkv, webm), `name`, `site` (необязательно), `analysis_fps` (необязательно).
+Файл сохраняется на сервере и проверяется (должен открываться как видео), создаётся источник `kind=file`.
+Ошибки: `415 UNSUPPORTED_MEDIA_TYPE` (расширение), `422 INVALID_VIDEO` (не читается), `413 FILE_TOO_LARGE`.
+При удалении источника загруженный файл тоже удаляется.
+
+```bash
+curl -F "file=@shift.mp4" -F "name=Камера 3" -F "site=Цех №2" http://localhost:8000/api/v1/sources/upload
+```
+
+### `GET /sources/{id}` → `200 Source`  · `404 SOURCE_NOT_FOUND`
+
+### `PATCH /sources/{id}` → `200 Source`
+Любое подмножество полей `name`, `uri`, `site`, `analysis_fps`. `409 SOURCE_RUNNING` при смене `uri` у запущенного.
+
+### `DELETE /sources/{id}` → `204`
+Удаляет источник, его зоны и правила. События в журнале **остаются** (у них `source_name` станет `null`).
+`409 SOURCE_RUNNING`, если источник запущен.
+
+### `POST /sources/{id}/start` → `202 Source`
+Запускает анализ, источник переходит в `running` (статус придёт и в WS `source.status`).
+`409 SOURCE_ALREADY_RUNNING`, `422 UNSUPPORTED_SOURCE_KIND`.
+Конфигурация (зоны, правила) читается в момент запуска; изменения зон и правил применяются после перезапуска.
+
+### `POST /sources/{id}/stop` → `200 Source`
+Останавливает анализ, активные эпизоды завершаются, статус `stopped`. Для незапущенного источника — тоже `200`, без изменений.
+
+### `GET /sources/{id}/preview` → `200 image/jpeg`
+Один кадр источника (для файла — кадр из начала видео) в исходном разрешении. Поверх него фронт рисует зоны
+в долях `0..1`. `422 PREVIEW_UNAVAILABLE`, если кадр получить не удалось.
+
+---
+
+## Zones — зоны на кадре
+
+### Объект `Zone`
+```json
+{
+  "id": "5a1e...",
+  "source_id": "0b6f...",
+  "name": "Зона пресса",
+  "polygon": [[0.3, 0.4], [0.7, 0.4], [0.7, 0.95], [0.3, 0.95]],
+  "created_at": "2026-10-23T09:01:00.000Z",
+  "updated_at": "2026-10-23T09:01:00.000Z"
+}
+```
+
+Требования к полигону: от 3 до 100 точек, обе координаты в `0..1`, ненулевая площадь. Замыкать (повторять первую точку) не нужно.
+
+| Метод | Путь | Тело | Ответ |
+|---|---|---|---|
+| GET | `/sources/{id}/zones` | — | `200 Zone[]` |
+| POST | `/sources/{id}/zones` | `{"name", "polygon"}` | `201 Zone` |
+| PATCH | `/zones/{id}` | `{"name"?, "polygon"?}` | `200 Zone` |
+| DELETE | `/zones/{id}` | — | `204`; правила этой зоны удаляются, события остаются (`zone_name` = `null`) |
+
+---
+
+## Scenarios и Rules — правила анализа
+
+### `GET /scenarios` → `200 ScenarioInfo[]`
+Зарегистрированные сценарии. По `params_schema` (JSON Schema) можно построить форму параметров.
+
+```json
+[
+  {
+    "scenario_type": "danger_zone",
+    "title": "Человек в опасной зоне",
+    "description": "Тревога, если ноги человека (центр нижней кромки рамки) внутри полигона зоны",
+    "requires_zone": true,
+    "params_schema": {"type": "object", "properties": {"min_confidence": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.4}, "...": {}}},
+    "defaults": {"min_confidence": 0.4, "confirm_window_s": 1.0, "gap_tolerance_s": 2.0, "labels": ["person"]}
+  }
+]
+```
+
+Параметры `danger_zone`:
+
+| Параметр | По умолчанию | Смысл |
+|---|---|---|
+| `min_confidence` | 0.4 | Детекции с меньшей уверенностью игнорируются |
+| `confirm_window_s` | 1.0 | Сколько секунд видео нарушение должно продолжаться до тревоги (отсекает единичные ложные кадры) |
+| `gap_tolerance_s` | 2.0 | Потеря человека из вида короче этого не завершает эпизод (перекрытие, мигание детекции) |
+| `labels` | `["person"]` | Классы объектов, которые считаются нарушителями |
+
+### Объект `Rule`
+```json
+{
+  "id": "c3d9...",
+  "source_id": "0b6f...",
+  "zone_id": "5a1e...",
+  "scenario_type": "danger_zone",
+  "enabled": true,
+  "priority": "high",
+  "params": {"min_confidence": 0.4, "confirm_window_s": 1.0, "gap_tolerance_s": 2.0, "labels": ["person"]},
+  "version": 1,
+  "created_at": "2026-10-23T09:02:00.000Z",
+  "updated_at": "2026-10-23T09:02:00.000Z"
+}
+```
+`params` в ответе всегда полные (с дефолтами). `version` растёт при каждом изменении `params` или `enabled`;
+в событии сохраняется `rule_version`, по которому оно создано.
+
+| Метод | Путь | Тело / параметры | Ответ |
+|---|---|---|---|
+| GET | `/rules?source_id=` | `source_id` необязателен | `200 Rule[]` |
+| POST | `/rules` | `{"source_id", "zone_id"?, "scenario_type", "enabled"?, "priority"?, "params"?}` | `201 Rule` |
+| PATCH | `/rules/{id}` | `{"zone_id"?, "enabled"?, "priority"?, "params"?}` | `200 Rule` |
+| DELETE | `/rules/{id}` | — | `204` |
+
+`zone_id = null` — правило действует во всех зонах источника. При PATCH `params` объединяются с текущими
+(переданные ключи заменяют старые). Ошибки: `422 UNKNOWN_SCENARIO`, `422 INVALID_SCENARIO_PARAMS`,
+`422 ZONE_SOURCE_MISMATCH`, `404 SOURCE_NOT_FOUND` / `ZONE_NOT_FOUND`.
+
+---
+
+## Events — журнал нарушений
+
+Одно событие = один **эпизод** нарушения: пока человек остаётся в зоне (с допуском кратких потерь),
+это одно событие и одна тревога; выход и новый вход — новое событие. Разные люди — разные события.
+
+### Объект `Event`
+```json
+{
+  "id": "e2b4c8a0-1f5d-4c33-9a7e-3b0d5f9c2a11",
+  "scenario_type": "danger_zone",
+  "source_id": "0b6f...",
+  "source_name": "Камера 3 — цех штамповки",
+  "zone_id": "5a1e...",
+  "zone_name": "Зона пресса",
+  "track_id": 4,
+  "priority": "high",
+  "state": "active",
+  "review_status": "unreviewed",
+  "confidence": 0.91,
+  "started_at": "2026-10-23T09:15:02.000Z",
+  "last_seen_at": "2026-10-23T09:15:09.500Z",
+  "ended_at": null,
+  "video_ts_start": 12.0,
+  "video_ts_end": 19.5,
+  "video_ts_detected": 13.0,
+  "detected_at": "2026-10-23T09:15:03.210Z",
+  "received_at": "2026-10-23T09:15:03.240Z",
+  "notified_at": "2026-10-23T09:15:03.245Z",
+  "model_version": "mock-1.0",
+  "rule_id": "c3d9...",
+  "rule_version": 1,
+  "description": "Человек в зоне «Зона пресса»",
+  "thumbnail_url": "/media/evidence/e2b4.../frame_annotated_12.000.jpg",
+  "evidence": [
+    {
+      "id": "9f0a...",
+      "event_id": "e2b4...",
+      "kind": "frame_raw",
+      "url": "/media/evidence/e2b4.../frame_raw_12.000.jpg",
+      "video_ts": 13.0,
+      "frame_time": "2026-10-23T09:15:03.000Z",
+      "bboxes": [{"label": "person", "confidence": 0.91, "bbox": [0.42, 0.35, 0.55, 0.88], "track_id": 4}],
+      "created_at": "2026-10-23T09:15:03.300Z"
+    },
+    {"id": "...", "kind": "frame_annotated", "url": "/media/evidence/e2b4.../frame_annotated_12.000.jpg", "...": "..."}
+  ],
+  "created_at": "2026-10-23T09:15:03.240Z",
+  "updated_at": "2026-10-23T09:15:09.600Z"
+}
+```
+
+Поля времени:
+- `started_at`, `last_seen_at`, `ended_at` — «настенное» время эпизода. Для видеофайла = время запуска анализа + `video_ts`.
+- `video_ts_start`, `video_ts_end` — то же в секундах от начала видео (для перемотки плеера).
+- `video_ts_detected` — момент подтверждения эпизода в секундах видео (обычно `video_ts_start + confirm_window_s`).
+- `detected_at` — когда конвейер подтвердил эпизод; `received_at` — когда backend принял; `notified_at` — когда
+  ушла тревога в WS.
+- `evidence` может быть пустым первые доли секунды после `event.created` — кадры догружаются следом
+  (придёт `event.updated`).
+
+### `GET /events` → `200 EventPage`
+
+| Параметр | Тип | Смысл |
+|---|---|---|
+| `scenario_type` | ScenarioType | |
+| `source_id` | UUID | Камера |
+| `zone_id` | UUID | |
+| `from`, `to` | datetime | Эпизод **пересекается** с интервалом: `started_at <= to` и (`ended_at >= from` или эпизод ещё активен) |
+| `state` | EpisodeState | |
+| `review_status` | ReviewStatus | |
+| `priority` | Priority | |
+| `limit` | int 1..500, по умолчанию 50 | |
+| `offset` | int ≥ 0, по умолчанию 0 | |
+
+Все фильтры необязательны и объединяются через И. Сортировка: `started_at` по убыванию.
+
+```bash
+curl "http://localhost:8000/api/v1/events?scenario_type=danger_zone&source_id=0b6f...&from=2026-10-23T00:00:00Z&limit=20"
+```
+```json
+{"items": [ /* Event */ ], "total": 137, "limit": 20, "offset": 0}
+```
+
+### `GET /events/{id}` → `200 EventDetail`
+`Event` + `actions` — история действий оператора по возрастанию времени:
+```json
+{
+  "...": "все поля Event",
+  "actions": [
+    {
+      "id": "a1...",
+      "event_id": "e2b4...",
+      "action": "confirm",
+      "prev_status": "unreviewed",
+      "new_status": "confirmed",
+      "comment": "Подтверждаю, рабочий без допуска",
+      "author": "Иванова А.С.",
+      "created_at": "2026-10-23T09:16:00.000Z"
+    }
+  ]
+}
+```
+
+### `POST /events/{id}/actions` → `200 EventDetail`
+```json
+{"action": "confirm", "comment": "Подтверждаю", "author": "Иванова А.С."}
+```
+Меняет `review_status` по таблице ниже, пишет запись в историю, рассылает WS `event.reviewed`.
+`state` эпизода не меняется. `comment` обязателен для `action=comment`, для остальных — по желанию.
+
+Таблица переходов `review_status`:
+
+| action | Разрешено из | Переводит в |
+|---|---|---|
+| `confirm` | `unreviewed`, `escalated` | `confirmed` |
+| `mark_false` | `unreviewed`, `escalated`, `confirmed` | `false_positive` |
+| `escalate` | `unreviewed`, `confirmed` | `escalated` |
+| `reset` | `confirmed`, `false_positive`, `escalated` | `unreviewed` |
+| `comment` | любой | не меняет |
+
+Недопустимый переход → `409 INVALID_TRANSITION`, `details: {"action", "current_status", "allowed_from"}`.
+
+---
+
+## Stats — сводка для дашборда
+
+### `GET /stats?from=&to=` → `200 Stats`
+Те же правила пересечения интервала, что в журнале. Без параметров — за всё время.
+```json
+{
+  "from": "2026-10-23T00:00:00Z",
+  "to": null,
+  "total": 12,
+  "by_scenario_type": [{"key": "danger_zone", "label": null, "count": 12}],
+  "by_source": [{"key": "0b6f...", "label": "Камера 3 — цех штамповки", "count": 12}],
+  "by_zone": [{"key": "5a1e...", "label": "Зона пресса", "count": 9}, {"key": "77aa...", "label": "Проход", "count": 3}],
+  "by_hour": [{"hour": "2026-10-23T09:00:00Z", "count": 7}, {"hour": "2026-10-23T10:00:00Z", "count": 5}],
+  "review": {"unreviewed": 4, "confirmed": 6, "false_positive": 1, "escalated": 1}
+}
+```
+`by_hour` — по `started_at`, часы в UTC (переводите в местное время на фронте); часы без событий не выводятся.
+
+## Metrics — замеры для отчёта
+
+### `GET /metrics?source_id=` → `200 Metrics`
+Без `source_id` — по всем источникам.
+```json
+{
+  "sources": [
+    {
+      "source_id": "0b6f...",
+      "source_name": "Камера 3 — цех штамповки",
+      "ts": "2026-10-23T09:15:04.002Z",
+      "fps": 24.6,
+      "inference_ms_avg": 18.4,
+      "inference_ms_p95": 22.9,
+      "frames_processed": 1830,
+      "detector_kind": "linq",
+      "model_version": "yolov8n-linq-int8-2026.10"
+    }
+  ],
+  "latency": {
+    "events_count": 12,
+    "detection_delay_real_s_avg": 1.31,
+    "detection_delay_real_s_p95": 1.62,
+    "detection_delay_video_ts_s_avg": 1.0,
+    "detection_delay_video_ts_s_p95": 1.1,
+    "notify_delay_ms_avg": 6.2,
+    "notify_delay_ms_p95": 11.0,
+    "alerts_per_episode": 1.0
+  }
+}
+```
+- `fps` — фактическая скорость обработки кадров воркером; `inference_ms_*` — чистое время инференса кадра.
+- `detection_delay_real_s` — `detected_at − started_at`: реальное время отклика от начала нарушения до подтверждения
+  (включает окно подтверждения `confirm_window_s`). Для живой камеры это и есть время реакции системы. Для видеофайла
+  `started_at` = время запуска анализа + `video_ts_start`, поэтому при обработке быстрее реального времени значение
+  может быть меньше окна подтверждения и даже отрицательным.
+- `detection_delay_video_ts_s` — `video_ts_detected − video_ts_start`: то же по таймлайну видео. Не зависит от скорости
+  обработки и показывает, сколько секунд нарушения нужно системе для подтверждения (≈ `confirm_window_s`).
+- `notify_delay_ms` — `notified_at − detected_at`: от подтверждения конвейером до отправки тревоги в WS.
+- `alerts_per_episode` — сколько тревог `event.created` ушло в среднем на эпизод; 1.0 означает, что повторы подавлены.
+
+## Health
+
+### `GET /health` → `200 Health`
+```json
+{
+  "status": "degraded",
+  "db": "ok",
+  "detector_kind": "mock",
+  "sources": [
+    {"id": "0b6f...", "name": "Камера 3", "status": "disconnected", "last_heartbeat_at": "2026-10-23T09:15:04.002Z", "last_error": "Нет heartbeat от воркера 10 с"}
+  ]
+}
+```
+`status=degraded`, если БД недоступна или хотя бы один источник в `error`/`disconnected`.
+Источник в `running`, от которого нет heartbeat дольше `HEARTBEAT_TIMEOUT_S` (10 с), переводится в `disconnected`.
+
+---
+
+## WebSocket `/ws/events`
+
+Подключение: `ws://localhost:8000/ws/events`. Сервер только отправляет; входящие сообщения игнорируются.
+При обрыве переподключайтесь и перечитайте состояние через REST.
+
+Формат каждого сообщения:
+```json
+{"type": "event.created", "data": { /* ... */ }, "ts": "2026-10-23T09:15:03.245Z"}
+```
+
+| type | data | Когда |
+|---|---|---|
+| `event.created` | `Event` | Новый эпизод подтверждён — **это и есть тревога** (одна на эпизод) |
+| `event.updated` | `Event` | Эпизод продолжается (не чаще раза в секунду) или догрузились кадры-доказательства |
+| `event.ended` | `Event` | Эпизод завершён (`state=ended`) |
+| `event.reviewed` | `Event` | Оператор изменил `review_status` или оставил комментарий |
+| `source.status` | `SourceStatus` | Сменился статус источника |
+
+`SourceStatus`:
+```json
+{"id": "0b6f...", "name": "Камера 3", "status": "error", "prev_status": "running", "last_error": "Не удалось открыть видео: ...", "last_heartbeat_at": "2026-10-23T09:15:04.002Z"}
+```
+
+`data` для `event.*` — тот же объект, что в `GET /events/{id}`, но без `actions`.
+Обновляйте карточку события целиком по `data.id`.
