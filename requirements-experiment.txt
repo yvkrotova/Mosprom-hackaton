@@ -1,0 +1,12 @@
+# Baseline YOLOv8s experiment (Python 3.11, CPU build of torch on Windows)
+ultralytics==8.4.184
+torch==2.14.1
+torchvision==0.29.1
+opencv-python==5.0.0.93
+pandas==3.1.0
+numpy==2.4.6
+lap==0.5.13
+# ONNX export / validation
+onnx==1.23.2
+onnxruntime==1.31.0
+onnxslim==0.1.98

@@ -1,0 +1,7 @@
+.venv/
+*.pt
+*.onnx
+data/videos/
+outputs/
+__pycache__/
+runs/
