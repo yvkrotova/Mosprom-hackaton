@@ -7,7 +7,7 @@ Two checks on a few frames of a video:
 
 Example:
   python scripts/check_onnx.py --onnx models/yolov8s.onnx --pt models/yolov8s.pt \
-      --source data/videos/0_te1.mp4 --frames 0 60 120 180 240 300 360
+      --source data/videos/0_te1.mp4 --classes 0 --conf 0.35
 """
 
 import argparse
@@ -27,8 +27,10 @@ def parse_args():
     p.add_argument("--onnx", default="models/yolov8s.onnx")
     p.add_argument("--pt", default="models/yolov8s.pt")
     p.add_argument("--source", required=True)
-    p.add_argument("--frames", type=int, nargs="+", default=[0, 60, 120, 180, 240, 300, 360])
-    p.add_argument("--conf", type=float, default=0.25)
+    p.add_argument("--frames", type=int, nargs="+", default=list(range(0, 400, 40)))
+    p.add_argument("--classes", type=lambda s: [int(c) for c in s.split(",") if c.strip()], default=None,
+                   help="comma-separated class ids to compare (default: all)")
+    p.add_argument("--conf", type=float, default=0.35)
     p.add_argument("--iou", type=float, default=0.7)
     p.add_argument("--imgsz", type=int, default=640)
     p.add_argument("--out", default=None, help="optional path to save report json")
@@ -110,8 +112,9 @@ def main():
     names = yolo.names
 
     cap = cv2.VideoCapture(args.source)
-    report = {"onnx": args.onnx, "opset": opset, "input_shape": inp.shape, "frames": []}
-    all_pairs, ort_times = [], []
+    report = {"onnx": args.onnx, "opset": opset, "input_shape": inp.shape, "classes": args.classes,
+              "conf": args.conf, "frames": []}
+    all_pairs, ort_times, seen_classes = [], [], set()
     for f in args.frames:
         cap.set(cv2.CAP_PROP_POS_FRAMES, f)
         ok, img = cap.read()
@@ -127,10 +130,14 @@ def main():
         raw_diff = float(np.abs(out - ref_out).max())
 
         det_ort = postprocess(out, r, dx, dy, args.conf, args.iou)
-        res = yolo.predict(img, conf=args.conf, iou=args.iou, imgsz=args.imgsz, device="cpu", verbose=False)[0]
+        res = yolo.predict(img, conf=args.conf, iou=args.iou, imgsz=args.imgsz, classes=args.classes,
+                           device="cpu", verbose=False)[0]
         det_pt = np.concatenate(
             [res.boxes.xyxy.numpy(), res.boxes.conf.numpy()[:, None], res.boxes.cls.numpy()[:, None]], 1
         )
+        if args.classes is not None:
+            det_ort = det_ort[np.isin(det_ort[:, 5], args.classes)]
+        seen_classes |= {names[int(c)] for c in det_ort[:, 5]}
         pairs = match(det_pt, det_ort)
         all_pairs += pairs
         row = {
@@ -154,7 +161,7 @@ def main():
         "mean_iou": round(float(np.mean([p[0] for p in all_pairs])), 4) if all_pairs else None,
         "mean_conf_abs_diff": round(float(np.mean([p[1] for p in all_pairs])), 4) if all_pairs else None,
         "max_raw_abs_diff": max(r["raw_max_abs_diff"] for r in report["frames"]),
-        "classes": sorted({names[int(c)] for c in det_ort[:, 5]}) if len(det_ort) else [],
+        "classes": sorted(seen_classes),
     }
     print("\n=== Summary ===")
     print(json.dumps(report["summary"], indent=2, ensure_ascii=False))

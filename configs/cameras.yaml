@@ -1,0 +1,19 @@
+# Per-camera settings for scripts/run_yolo_video.py.
+# Priority: built-in defaults < `defaults` below < camera entry < command-line arguments.
+# Relative paths are resolved from the directory the script is run in (repo root).
+
+defaults:
+  model: models/yolov8s.pt
+  classes: [0]        # COCO class ids; 0 = person
+  conf: 0.35
+  imgsz: 640
+  device: auto        # auto | cpu | 0 | cuda:0
+  tracker: bytetrack.yaml
+
+cameras:
+  - camera_id: cam_01
+    source: data/videos/0_te1.mp4   # video file or rtsp://user:pass@host:554/stream
+    zone: press_shop                # цех прессов
+    classes: [0]
+    conf: 0.35
+    imgsz: 640

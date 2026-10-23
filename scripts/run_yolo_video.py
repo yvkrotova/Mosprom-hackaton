@@ -1,13 +1,17 @@
-"""Run a YOLO detector with ByteTrack tracking over a video.
+"""Run a YOLO detector with ByteTrack tracking over a camera video / stream.
 
-Outputs (in --out):
-  <video>_annotated.mp4   - video with boxes and track ids
-  <video>_detections.csv  - one row per detection
-  <video>_benchmark.json  - per-frame timings, FPS and device info
+Settings come from configs/cameras.yaml (`defaults`, then the camera entry);
+command-line arguments override them.
+
+Outputs (in --out), <name> = camera_id (or the source file name without --camera):
+  <name>_annotated.mp4   - video with boxes and track ids
+  <name>_detections.csv  - one row per detection
+  <name>_benchmark.json  - per-frame timings, FPS and device info
 
 Example:
-  python scripts/run_yolo_video.py --model models/yolov8s.pt \
-      --source data/videos/0_te1.mp4 --conf 0.25 --imgsz 640 --device auto
+  python scripts/run_yolo_video.py --camera cam_01
+  python scripts/run_yolo_video.py --camera cam_01 --classes 0,2 --conf 0.25 --max-frames 300
+  python scripts/run_yolo_video.py --source data/videos/0_te1.mp4 --classes 0
 """
 
 import argparse
@@ -20,20 +24,79 @@ from pathlib import Path
 import cv2
 import pandas as pd
 import torch
+import yaml
 from ultralytics import YOLO
+
+DEFAULTS = {
+    "model": str(Path("models") / "yolov8s.pt"),
+    "classes": [0],
+    "conf": 0.35,
+    "imgsz": 640,
+    "device": "auto",
+    "tracker": "bytetrack.yaml",
+    "max_frames": 0,
+}
+OVERRIDABLE = ("model", "source", "classes", "conf", "imgsz", "device", "tracker", "max_frames")
+
+
+def parse_classes(value):
+    try:
+        return [int(c) for c in value.split(",") if c.strip()]
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected comma-separated integers, got {value!r}")
 
 
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--model", default="models/yolov8s.pt", help="path to .pt/.onnx weights")
-    p.add_argument("--source", required=True, help="path to input video")
-    p.add_argument("--conf", type=float, default=0.25, help="confidence threshold")
-    p.add_argument("--imgsz", type=int, default=640, help="inference image size")
-    p.add_argument("--device", default="auto", help="auto | cpu | 0 | cuda:0 | mps")
+    p.add_argument("--config", default=str(Path("configs") / "cameras.yaml"), help="cameras config (yaml)")
+    p.add_argument("--camera", help="camera_id from the config (default: first camera if --source is not set)")
+    # default None = not given on the command line, value comes from the config
+    p.add_argument("--model", help="path to .pt/.onnx weights")
+    p.add_argument("--source", help="path to input video or rtsp:// url")
+    p.add_argument("--classes", type=parse_classes, help="comma-separated COCO class ids, e.g. 0 or 0,2,7")
+    p.add_argument("--conf", type=float, help="confidence threshold")
+    p.add_argument("--imgsz", type=int, help="inference image size")
+    p.add_argument("--device", help="auto | cpu | 0 | cuda:0 | mps")
     p.add_argument("--out", default="outputs", help="output directory")
-    p.add_argument("--tracker", default="bytetrack.yaml", help="ultralytics tracker config")
-    p.add_argument("--max-frames", type=int, default=0, help="stop after N frames (0 = whole video)")
+    p.add_argument("--tracker", help="ultralytics tracker config")
+    p.add_argument("--max-frames", type=int, help="stop after N frames (0 = whole video)")
     return p.parse_args()
+
+
+def load_settings(args):
+    """Merge DEFAULTS < config `defaults` < camera entry < command-line args."""
+    settings = dict(DEFAULTS, camera_id=None, zone=None, source=None)
+    config_path = Path(args.config)
+    camera = None
+    if config_path.exists():
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        settings.update(config.get("defaults") or {})
+        cameras = config.get("cameras") or []
+        if args.camera:
+            camera = next((c for c in cameras if c.get("camera_id") == args.camera), None)
+            if camera is None:
+                known = ", ".join(str(c.get("camera_id")) for c in cameras)
+                raise SystemExit(f"camera {args.camera!r} not found in {config_path} (known: {known})")
+        elif not args.source and cameras:
+            camera = cameras[0]
+    elif args.camera:
+        raise SystemExit(f"config not found: {config_path}")
+    if camera:
+        settings.update(camera)
+
+    for key in OVERRIDABLE:
+        value = getattr(args, key)
+        if value is not None:
+            settings[key] = value
+    if not settings["source"]:
+        raise SystemExit("no source: pass --source or --camera (or add a camera to the config)")
+    if isinstance(settings["classes"], int):
+        settings["classes"] = [settings["classes"]]
+    return settings
+
+
+def is_stream(source):
+    return "://" in str(source)
 
 
 def resolve_device(device):
@@ -86,11 +149,17 @@ def device_info(device):
 
 def main():
     args = parse_args()
-    device = resolve_device(args.device)
-    source = Path(args.source)
+    cfg = load_settings(args)
+    device = resolve_device(str(cfg["device"]))
+    source = cfg["source"] if is_stream(cfg["source"]) else Path(cfg["source"])
+    if isinstance(source, Path) and not source.exists():
+        raise SystemExit(f"source not found: {source}")
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
-    stem = source.stem
+    stem = cfg["camera_id"] or (source.stem if isinstance(source, Path) else "stream")
+    print(f"camera: {cfg['camera_id']} | zone: {cfg['zone']} | source: {source}")
+    print(f"model: {cfg['model']} | classes: {cfg['classes']} | conf: {cfg['conf']} | "
+          f"imgsz: {cfg['imgsz']} | device: {device}")
 
     cap = cv2.VideoCapture(str(source))
     fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
@@ -99,7 +168,7 @@ def main():
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     cap.release()
 
-    model = YOLO(args.model, task="detect")
+    model = YOLO(str(cfg["model"]), task="detect")
     names = model.names
 
     video_path = out_dir / f"{stem}_annotated.mp4"
@@ -111,10 +180,11 @@ def main():
     t_start = time.perf_counter()
     results = model.track(
         source=str(source),
-        conf=args.conf,
-        imgsz=args.imgsz,
+        conf=cfg["conf"],
+        imgsz=cfg["imgsz"],
+        classes=cfg["classes"],
         device=device,
-        tracker=args.tracker,
+        tracker=cfg["tracker"],
         persist=True,
         stream=True,
         verbose=False,
@@ -139,7 +209,7 @@ def main():
                 })
         writer.write(r.plot())
         n_frames += 1
-        if args.max_frames and n_frames >= args.max_frames:
+        if cfg["max_frames"] and n_frames >= cfg["max_frames"]:
             break
     total_time = time.perf_counter() - t_start
     writer.release()
@@ -154,10 +224,12 @@ def main():
         return round(sum(s[key] for s in speeds) / len(speeds), 2) if speeds else None
 
     benchmark = {
-        "model": str(args.model),
+        "camera_id": cfg["camera_id"],
+        "zone": cfg["zone"],
+        "model": str(cfg["model"]),
         "source": str(source),
         "video": {"width": width, "height": height, "fps": round(fps, 2), "frames_total": total_frames},
-        "params": {"conf": args.conf, "imgsz": args.imgsz, "tracker": args.tracker},
+        "params": {"classes": cfg["classes"], "conf": cfg["conf"], "imgsz": cfg["imgsz"], "tracker": cfg["tracker"]},
         "frames_processed": n_frames,
         "preprocess_ms": mean_ms("preprocess"),
         "inference_ms": mean_ms("inference"),
