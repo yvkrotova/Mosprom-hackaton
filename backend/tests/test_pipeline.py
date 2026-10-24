@@ -322,8 +322,8 @@ def test_build_detector(tmp_path: Path):
         build_detector("yolo", settings)
 
 
-def test_linq_stub_raises_not_implemented():
+def test_linq_missing_configuration_is_error():
     detector = LinqDetector(Settings(_env_file=None))
     frame = Frame("s", 0, 0.0, 64, 48, np.zeros((48, 64, 3), np.uint8))
-    with pytest.raises(NotImplementedError, match="LinQ"):
+    with pytest.raises(ValueError, match="LINQ_API_URL"):
         detector.infer(frame)

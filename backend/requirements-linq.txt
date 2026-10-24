@@ -1,0 +1,3 @@
+# Additional public dependency for DETECTOR=linq
+pika==1.3.2
+# Also install the organizers' tpu_pycloud_format wheel and its dependencies.

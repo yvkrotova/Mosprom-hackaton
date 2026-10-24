@@ -71,6 +71,9 @@ class Settings(BaseSettings):
     linq_login: str = ""
     linq_password: str = ""
     linq_program: str = ""
+    linq_bridge_url: str = ""
+    linq_jupyter_token: str = ""
+    linq_timeout_s: float = Field(default=60.0, gt=0, le=300)
 
     @property
     def cors_origin_list(self) -> list[str]:

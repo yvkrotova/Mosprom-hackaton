@@ -96,7 +96,7 @@ def test_detector_error_sets_source_error(client, settings, configured_source):
     assert code == EXIT_PIPELINE_ERROR
     source = client.get(f"/api/v1/sources/{src}").json()
     assert source["status"] == "error"
-    assert "NotImplementedError" in source["last_error"]
+    assert "LINQ_API_URL" in source["last_error"]
     # Ошибка не выдаётся за «нарушений нет»: статус error виден, событий нет.
     assert client.get("/api/v1/events").json()["total"] == 0
 
@@ -305,4 +305,4 @@ def test_e2e_worker_crash_sets_error(live, settings, mock_video):
     client.post(f"/api/v1/sources/{src}/start")
     assert app.state.worker_manager.wait(src, timeout=60)
     source = _wait_status(client, src, {"error"})
-    assert "NotImplementedError" in source["last_error"]
+    assert "LINQ_API_URL" in source["last_error"]

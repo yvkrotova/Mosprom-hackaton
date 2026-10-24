@@ -42,6 +42,10 @@ def build_detector(
 
         return OnnxDetector(settings)
     if kind == "linq":
+        if settings.linq_bridge_url:
+            from app.pipeline.detectors.linq_bridge import LinqBridgeDetector
+
+            return LinqBridgeDetector(settings)
         from app.pipeline.detectors.linq import LinqDetector
 
         return LinqDetector(settings)

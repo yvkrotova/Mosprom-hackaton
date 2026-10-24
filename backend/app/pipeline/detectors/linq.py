@@ -1,22 +1,8 @@
-"""LinqDetector: YOLOv8 на ускорителе LinQ. Вызов ускорителя — ЗАГЛУШКА (TODO).
+"""YOLOv8s on LinQ via organizers' RabbitMQ protocol.
 
-Сигнатуры Python API LinQ берутся из usage_example_python_api.zip организаторов. Здесь они
-НЕ выдуманы: места вызова помечены TODO и бросают NotImplementedError. Пре- и постпроцессинг
-общие с OnnxDetector (yolo_common.py), поэтому результаты LinQ и CPU напрямую сравнимы.
-
-Что происходит в infer(frame) (frame.image — BGR uint8, (H, W, 3), как отдаёт OpenCV):
-
-1. letterbox() -> тензор [1, 3, 640, 640] float32, RGB, 0..1 (как при экспорте в ONNX).
-   Если программа LinQ скомпилирована с int8-входом, тензор нужно квантовать
-   (q = round(x / scale) + zero_point) параметрами из компилятора — TODO(CV) в _to_device_input.
-2. _run(): вызов скомпилированной программы TPU -> сырой выход сети.
-3. Выход после квантования может прийти в int8/uint8: его нужно деквантовать
-   (x = (q - zero_point) * scale) до float32 формы [1, 84, 8400] — TODO(CV) в _dequantize.
-   Модель экспортирована без NMS: 4 координаты cx, cy, w, h в пикселях входа + 80 оценок классов.
-4. postprocess(): порог, фильтр классов, NMS, снятие letterbox, доли 0..1.
-
-Любая ошибка ускорителя — исключение (воркер покажет статус error), а не пустой список.
-Доступ — только из .env: LINQ_API_URL, LINQ_LOGIN, LINQ_PASSWORD, LINQ_PROGRAM.
+raw=False accepts float32 RGB NCHW /255 and returns float32 [1,84,8400].
+Server handles quantization; do not quantize the input a second time.
+The existing pipeline's preprocessing, tracker and scenario rules are retained.
 """
 
 import time
@@ -51,12 +37,9 @@ class LinqDetector(Detector):
         self.class_ids = resolve_class_ids(settings.detect_class_list, self.names)
         self.conf_threshold = settings.detector_conf_threshold
         self.iou_threshold = settings.iou_threshold
-        # TODO(CV): подключиться к LinQ и загрузить программу через Python API организаторов
-        #   (usage_example_python_api.zip). Логин/пароль — settings.linq_login / linq_password,
-        #   только из .env.
-        self._session: Any = None
-        # Параметры квантования (scale, zero_point) входа и выхода — из отчёта компилятора LinQ.
-        # None — тензор передаётся/приходит во float32. TODO(CV): заполнить после компиляции.
+        from app.pipeline.detectors.linq_transport import LinqTransport
+
+        self._session = LinqTransport(settings)
         self.input_quant: tuple[float, int] | None = None
         self.output_quant: tuple[float, int] | None = None
 
@@ -66,10 +49,9 @@ class LinqDetector(Detector):
         return quantize(tensor, *self.input_quant)
 
     def _run(self, device_input: Any) -> Any:
-        # TODO(CV): вызов программы TPU через Python API LinQ; вернуть сырой выход сети.
-        raise NotImplementedError(
-            "LinqDetector._run: вызов LinQ не реализован — см. usage_example_python_api.zip"
-        )
+        if self.input_size != 640:
+            raise ValueError("Выбранная TPU-программа требует MODEL_INPUT_SIZE=640")
+        return self._session.run(device_input)
 
     def _dequantize(self, raw: Any) -> np.ndarray:
         """Выход TPU -> float32 [1, 84, 8400]. int8/uint8 требует output_quant."""
@@ -115,5 +97,4 @@ class LinqDetector(Detector):
         )
 
     def close(self) -> None:
-        # TODO(CV): освободить ускоритель/сессию LinQ.
-        self._session = None
+        self._session.close()
