@@ -102,7 +102,10 @@ def main() -> int:
     parser.add_argument("--detector", choices=["onnx", "none"], default="onnx")
     args = parser.parse_args()
 
-    videos = args.videos or sorted({p for g in DEFAULT_GLOBS for p in BACKEND_DIR.glob(g)})
+    videos = [p.resolve() for p in args.videos] or sorted(
+        {p for g in DEFAULT_GLOBS for p in BACKEND_DIR.glob(g)}
+    )
+    args.out = args.out.resolve()
     detector = None
     if args.detector == "onnx":
         from app.pipeline.detectors.onnx import OnnxDetector

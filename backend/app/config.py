@@ -49,6 +49,10 @@ class Settings(BaseSettings):
     tracks_push_hz: float = 8.0
     # Видеофайл анализируется не быстрее реального времени (для демо); иначе — как можно быстрее.
     realtime_playback: bool = False
+    # После загрузки видео анализ запускается сам (правила по умолчанию уже созданы).
+    auto_start_on_upload: bool = True
+    # Как часто воркер перечитывает конфигурацию (зоны, правила): изменения применяются на лету.
+    config_reload_s: float = 2.0
 
     heartbeat_interval_s: float = 2.0
     heartbeat_timeout_s: float = 10.0

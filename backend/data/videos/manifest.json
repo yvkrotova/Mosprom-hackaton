@@ -1,5 +1,5 @@
 {
-  "note": "Технические поля — tools/video_inventory.py (OpenCV). observations — по контактным листам previews/, это предположения. Пути — от backend/. Оригиналы не перемещались.",
+  "note": "Технические поля — tools/video_inventory.py (OpenCV). observations — по контактным листам previews/, это предположения. Пути — от backend/. Оригиналы не перемещались. Правила: zones[].scenario_types (по умолчанию danger_zone) + правила по умолчанию (бег) — как в интерфейсе.",
   "videos": [
     {
       "id": "te1",
@@ -46,12 +46,11 @@
               0.62,
               0.98
             ]
+          ],
+          "scenario_types": [
+            "danger_zone"
           ]
         }
-      ],
-      "rules": [
-        "danger_zone",
-        "run_fast_movement"
       ]
     },
     {
@@ -99,12 +98,11 @@
               0.6,
               0.72
             ]
+          ],
+          "scenario_types": [
+            "danger_zone"
           ]
         }
-      ],
-      "rules": [
-        "danger_zone",
-        "run_fast_movement"
       ]
     },
     {
@@ -151,12 +149,11 @@
               0.38,
               0.64
             ]
+          ],
+          "scenario_types": [
+            "danger_zone"
           ]
         }
-      ],
-      "rules": [
-        "danger_zone",
-        "run_fast_movement"
       ]
     },
     {
@@ -183,17 +180,34 @@
         "run_fast_movement: положительный пример",
         "калибровка порога скорости"
       ],
-      "zones": [],
-      "rules": [
-        "run_fast_movement"
+      "zones": []
+    },
+    {
+      "id": "coils",
+      "file": "data/storage/videos/ba23a925-3ce6-458a-8c17-c4aea165ab89.mp4",
+      "title": "Цех: падение рулона металла",
+      "fps": 30.0,
+      "frames": 455,
+      "duration_s": 15.17,
+      "width": 1280,
+      "height": 720,
+      "codec": "h264",
+      "rotation_meta": 0,
+      "size_mb": 2.1,
+      "readable": true,
+      "observations": {
+        "scene": "Цех/склад рулонов металла, потолочная камера, зелёный пол (предположение по превью)",
+        "people": "1–4 человека, рост в кадре средний; с ~9 с несколько человек подходят к месту падения",
+        "lighting": "ровное, сильная компрессия видео",
+        "motion": "на ~4–7 с рулон падает со стопки/погрузчика и остаётся лежать на полу (предположение)",
+        "detector": "OnnxDetector: 0–4 человека на кадр; на 5.5 с людей не находит (кадр смазан)"
+      },
+      "good_for": [
+        "blocked_exit: предмет упал и лежит в проходе",
+        "отрицательный/положительный пример для бега — проверить"
       ],
-      "rule_params": {
-        "run_fast_movement": {
-          "confirm_window_s": 0.4,
-          "min_track_age_s": 0.3
-        },
-        "_why": "человек в кадре ~1.2 с; с параметрами по умолчанию (0.5 + 0.8 с) эпизод не успевает подтвердиться — см. docs/BENCHMARKS.md"
-      }
+      "note": "Файл загружен через интерфейс (data/storage/videos): удаление этого источника удалит и файл",
+      "zones": []
     }
   ]
 }

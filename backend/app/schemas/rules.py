@@ -39,6 +39,9 @@ class RuleOut(ApiModel):
     priority: Priority
     params: dict[str, Any] = Field(description="Полные параметры с подставленными дефолтами")
     version: int = Field(description="Увеличивается при каждом изменении params или enabled")
+    auto_created: bool = Field(
+        False, description="Создано автоматически для сценария с auto_enable («по умолчанию»)"
+    )
     created_at: UtcDatetime
     updated_at: UtcDatetime
 
@@ -48,5 +51,8 @@ class ScenarioInfo(ApiModel):
     title: str
     description: str
     requires_zone: bool
+    auto_enable: bool = Field(
+        False, description="Правило на весь кадр создаётся само для каждого источника"
+    )
     params_schema: dict[str, Any] = Field(description="JSON Schema параметров")
     defaults: dict[str, Any]

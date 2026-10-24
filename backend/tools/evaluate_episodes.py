@@ -4,7 +4,8 @@
                                       [--detector onnx|linq|replay] [--fps 10]
                                       [--tracker bytetrack|iou] [--out data/videos/evaluation.json]
 
-Зоны и правила роликов — из manifest.json (как их создаёт tools/seed.py --videos). Совпадение —
+Зоны — из manifest.json, правила — как их создаёт интерфейс и tools/seed.py --videos
+(сценарии зоны + правила по умолчанию, дефолтные параметры). Совпадение —
 пересечение интервалов эпизода и разметки при одном scenario_type. Отдельно для каждого сценария:
 TP, FP, FN, precision, recall, оповещений на эпизод (event.created на найденный эпизод разметки,
 должно быть 1), задержка от start_s разметки до подтверждения (video_ts_detected).
@@ -20,6 +21,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.pipeline.runner import Pipeline  # noqa: E402
+from app.pipeline.scenarios import list_scenarios  # noqa: E402
 from app.pipeline.tracker import TrackerConfig  # noqa: E402
 from app.schemas.internal import SourceConfig  # noqa: E402
 from tools.videos import (  # noqa: E402
@@ -32,7 +34,7 @@ from tools.videos import (  # noqa: E402
 )
 
 T_ISO = "2026-10-24T00:00:00Z"
-SCENARIOS = ("danger_zone", "run_fast_movement")
+SCENARIOS = tuple(str(c.scenario_type) for c in list_scenarios())
 
 
 class Sink:
@@ -62,25 +64,30 @@ def source_config(entry: dict, fps: float) -> SourceConfig:
         }
         for z in entry.get("zones", [])
     ]
-    params = entry.get("rule_params", {})
-    rules = []
-    for scenario in entry.get("rules", []):
-        targets = [z["id"] for z in zones] if scenario == "danger_zone" else [None]
-        for zone_id in targets:
-            rules.append(
-                {
-                    "id": str(uuid.uuid4()),
-                    "source_id": sid,
-                    "zone_id": zone_id,
-                    "scenario_type": scenario,
-                    "enabled": True,
-                    "priority": "high",
-                    "params": params.get(scenario, {}),
-                    "version": 1,
-                    "created_at": T_ISO,
-                    "updated_at": T_ISO,
-                }
-            )
+    # Правила — как их создаёт интерфейс: сценарии зоны (zones[].scenario_types, по умолчанию
+    # danger_zone) и правила по умолчанию для сценариев с auto_enable — с дефолтными параметрами.
+    targets: list[tuple[str, str | None]] = []
+    for z, zone in zip(entry.get("zones", []), zones, strict=True):
+        for scenario in z.get("scenario_types", ["danger_zone"]):
+            targets.append((scenario, zone["id"]))
+    for cls in list_scenarios():
+        if cls.auto_enable and not cls.requires_zone:
+            targets.append((str(cls.scenario_type), None))
+    rules = [
+        {
+            "id": str(uuid.uuid4()),
+            "source_id": sid,
+            "zone_id": zone_id,
+            "scenario_type": scenario,
+            "enabled": True,
+            "priority": "high",
+            "params": {},
+            "version": 1,
+            "created_at": T_ISO,
+            "updated_at": T_ISO,
+        }
+        for scenario, zone_id in targets
+    ]
     return SourceConfig.model_validate(
         {
             "source": {

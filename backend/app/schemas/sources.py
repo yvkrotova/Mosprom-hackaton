@@ -37,17 +37,28 @@ class SourceOut(ApiModel):
     updated_at: UtcDatetime
 
 
+SCENARIO_TYPES_DESCRIPTION = (
+    "Для каких сценариев нужна зона (сценарии с requires_zone из GET /scenarios): для каждого "
+    "создаётся правило с параметрами по умолчанию, снятый — удаляется. При создании без поля — "
+    '["danger_zone"], как раньше; [] — зона без правил. При изменении без поля — без изменений.'
+)
+
+
 class ZoneCreate(InputModel):
     name: str = Field(min_length=1, max_length=200, examples=["Зона пресса"])
     polygon: Polygon = Field(
         description="Точки [[x, y], ...] в долях кадра 0..1, минимум 3",
         examples=[[[0.3, 0.4], [0.7, 0.4], [0.7, 0.95], [0.3, 0.95]]],
     )
+    scenario_types: list[str] | None = Field(
+        None, description=SCENARIO_TYPES_DESCRIPTION, examples=[["blocked_exit"]]
+    )
 
 
 class ZoneUpdate(InputModel):
     name: str | None = Field(None, min_length=1, max_length=200)
     polygon: Polygon | None = None
+    scenario_types: list[str] | None = Field(None, description=SCENARIO_TYPES_DESCRIPTION)
 
 
 class ZoneOut(ApiModel):
@@ -55,5 +66,8 @@ class ZoneOut(ApiModel):
     source_id: str
     name: str
     polygon: list[tuple[float, float]]
+    scenario_types: list[str] = Field(
+        default_factory=list, description="Сценарии, для которых у зоны есть правило"
+    )
     created_at: UtcDatetime
     updated_at: UtcDatetime

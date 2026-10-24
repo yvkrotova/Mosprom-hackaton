@@ -120,42 +120,20 @@ class Pipeline:
         self.config = config
         self.detector = detector
         self.stats = PipelineStats()
-        self.zones = {
-            z.id: ZoneGeometry(id=z.id, name=z.name, polygon=[tuple(p) for p in z.polygon])
-            for z in config.zones
-        }
-
-        self.rules: list[_ActiveRule] = []
-        contexts: dict[str, RuleContext] = {}
-        for rule in config.rules:
-            try:
-                cls = get_scenario(rule.scenario_type)
-            except KeyError:
-                logger.warning(
-                    "Правило %s: сценарий %s не найден — пропускаем", rule.id, rule.scenario_type
-                )
-                continue
-            params = cls.ParamsModel.from_stored(rule.params)
-            if rule.zone_id:
-                zones = [self.zones[rule.zone_id]]
-            else:
-                # Правило без зоны: сценарию, которому зона обязательна, — все зоны источника;
-                # сценарию без обязательной зоны — весь кадр (пустой список зон).
-                zones = list(self.zones.values()) if cls.requires_zone else []
-            self.rules.append(_ActiveRule(cls(rule.id), params, zones))
-            contexts[rule.id] = RuleContext(
-                rule_id=rule.id,
-                scenario_type=cls.scenario_type,
-                title=cls.title,
-                priority=Priority(rule.priority),
-                version=rule.version,
-                params=params,
-                zone_ids=tuple(z.id for z in zones),
-            )
+        self.zones, self.rules, contexts = self._build_rules(config)
+        self._pending_config: SourceConfig | None = None  # из потока ConfigWatcher
 
         # Трек должен пережить допустимый пропуск наблюдения, иначе после перекрытия
         # человек получит новый track_id и новый эпизод.
-        max_gap = max((r.params.gap_tolerance_s for r in self.rules), default=1.0)
+        # Правила зон (анализ сцены) треков не касаются — их допуск не растягивает буфер.
+        max_gap = max(
+            (
+                r.params.gap_tolerance_s
+                for r in self.rules
+                if not r.instance.requires_scene_analysis
+            ),
+            default=1.0,
+        )
         cfg = tracker_config or TrackerConfig()
         if cfg.buffer_s < max_gap:
             logger.warning(
@@ -175,6 +153,55 @@ class Pipeline:
             run_started_at=run_started_at or utcnow(),
             update_interval_s=config.settings.episode_update_interval_s,
         )
+
+    @staticmethod
+    def _build_rules(
+        config: SourceConfig,
+    ) -> tuple[dict[str, ZoneGeometry], list[_ActiveRule], dict[str, RuleContext]]:
+        zones = {
+            z.id: ZoneGeometry(id=z.id, name=z.name, polygon=[tuple(p) for p in z.polygon])
+            for z in config.zones
+        }
+        rules: list[_ActiveRule] = []
+        contexts: dict[str, RuleContext] = {}
+        for rule in config.rules:
+            try:
+                cls = get_scenario(rule.scenario_type)
+            except KeyError:
+                logger.warning(
+                    "Правило %s: сценарий %s не найден — пропускаем", rule.id, rule.scenario_type
+                )
+                continue
+            params = cls.ParamsModel.from_stored(rule.params)
+            if rule.zone_id:
+                rule_zones = [zones[rule.zone_id]]
+            else:
+                # Правило без зоны: сценарию, которому зона обязательна, — все зоны источника;
+                # сценарию без обязательной зоны — весь кадр (пустой список зон).
+                rule_zones = list(zones.values()) if cls.requires_zone else []
+            rules.append(_ActiveRule(cls(rule.id), params, rule_zones))
+            contexts[rule.id] = RuleContext(
+                rule_id=rule.id,
+                scenario_type=cls.scenario_type,
+                title=cls.title,
+                priority=Priority(rule.priority),
+                version=rule.version,
+                params=params,
+                zone_ids=tuple(z.id for z in rule_zones),
+            )
+        return zones, rules, contexts
+
+    def request_config(self, config: SourceConfig) -> None:
+        """Из другого потока: применить конфигурацию перед следующим кадром (в потоке конвейера)."""
+        self._pending_config = config
+
+    def apply_config(self, config: SourceConfig) -> None:
+        """Новые зоны и правила на лету (воркер перечитывает конфигурацию). Детектор, трекер и
+        чтение кадров не перезапускаются; эпизоды удалённых правил завершаются, прочие идут."""
+        self.config = config
+        self.zones, self.rules, contexts = self._build_rules(config)
+        self.episodes.reconfigure(contexts, self.zones)
+        logger.info("Конфигурация обновлена: правил %s, зон %s", len(self.rules), len(self.zones))
 
     def process_frame(self, frame: Frame) -> FrameResult:
         """Один кадр: детектор, трекер и анализ сцены — по одному разу; затем все правила читают
@@ -224,6 +251,9 @@ class Pipeline:
             for frame in source:
                 if should_stop():
                     break
+                pending, self._pending_config = self._pending_config, None
+                if pending is not None:
+                    self.apply_config(pending)
                 result = self.process_frame(frame)
                 if on_frame is not None:
                     on_frame(frame, result)

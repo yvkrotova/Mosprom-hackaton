@@ -57,8 +57,13 @@ Windows: PowerShell 5.1 портит JSON-аргументы и кириллиц
 EpisodeManager (end_window_s в BaseScenarioParams), track_id=None для зонных эпизодов, zone_states в
 live.frame, kinematics.py, бег без состояния, shapes в annotate.py. Регрессия: danger_zone — без
 изменений; бег — те же эпизоды, концы на 0.1–0.2 с раньше (нет хвоста EMA).
-Дальше: этап B (ensure_default_rules, AUTO_START_ON_UPLOAD, перезапуск при изменении правил, выбор
-сценариев для зоны), этап C (scene.py, blocked_exit, эталон зоны), D (фронт), E (контракт).
+Этап B — готово (backend): ensure_default_rules (auto_enable, sources.defaults_applied, rules.auto_created,
+миграция 0004) при POST /sources, upload, WorkerManager.start, seed; AUTO_START_ON_UPLOAD; изменения
+зон/правил — горячая перезагрузка в воркере (ConfigWatcher, CONFIG_RELOAD_S, Pipeline.apply_config);
+scenario_types у зоны (по умолчанию danger_zone). Дефолты бега: порог 1.7, confirm 0.6, min_track_age 0.3,
+край кадра — только верх/низ. Новый ролик coils в manifest.
+Дальше: этап C (scene.py, blocked_exit, эталон зоны), D (фронт, включая выбор сценариев зоны и
+автозапуск), E (контракт), документы.
 
 ## Статус (2026-10-24)
 Готово: ByteTrack, `run_fast_movement` (порог 1.5, подтверждён частично), живые треки во фронте, проверка

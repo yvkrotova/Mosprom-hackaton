@@ -22,7 +22,7 @@ from app.errors import ConflictError, UnprocessableError
 from app.models import Source
 from app.models.base import utcnow
 from app.schemas.enums import SourceKind, SourceStatus
-from app.services import event_service
+from app.services import event_service, rule_service
 from app.services.live_hub import LiveHub
 from app.services.notifier import WsHub
 from app.services.source_service import ACTIVE_STATUSES, set_source_status
@@ -114,6 +114,8 @@ class WorkerManager:
                 code="UNSUPPORTED_SOURCE_KIND",
                 kind=source.kind,
             )
+        # Правила по умолчанию (бег) — и для старых источников, и для созданных seed'ом.
+        rule_service.ensure_default_rules(session, source.id)
 
         log_dir = self.settings.storage_dir / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)

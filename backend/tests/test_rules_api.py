@@ -59,7 +59,7 @@ def test_scenarios_list(client):
 
     run = scenarios[1]
     assert run["requires_zone"] is False
-    assert run["defaults"]["speed_threshold"] == 1.5 and run["defaults"]["confirm_window_s"] == 0.8
+    assert run["defaults"]["speed_threshold"] == 1.7 and run["defaults"]["confirm_window_s"] == 0.6
     assert "ростов" in run["params_schema"]["properties"]["speed_threshold"]["description"]
 
 

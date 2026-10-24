@@ -236,6 +236,22 @@ class EpisodeManager:
                 ep.dirty = False
                 ep.updates_sent += 1
 
+    def reconfigure(self, rules: dict[str, RuleContext], zones: dict[str, ZoneGeometry]) -> None:
+        """Правила поменялись на лету: эпизоды удалённых правил завершаются, у остальных —
+        новые параметры (тот же эпизод продолжается)."""
+        for key, ep in list(self._active.items()):
+            if ep.rule.rule_id in rules:
+                ep.rule = rules[ep.rule.rule_id]
+            else:
+                self._end(key, ep)
+        for key, cand in list(self._candidates.items()):
+            if cand.rule.rule_id in rules:
+                cand.rule = rules[cand.rule.rule_id]
+            else:
+                del self._candidates[key]
+        self.rules = rules
+        self.zones = zones
+
     def finish(self) -> None:
         """Конец видео или остановка: все активные эпизоды завершаются."""
         for key, ep in list(self._active.items()):

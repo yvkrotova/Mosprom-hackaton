@@ -113,5 +113,34 @@
       1,
       0
     ]
+  },
+  {
+    "file": "data/storage/videos/ba23a925-3ce6-458a-8c17-c4aea165ab89.mp4",
+    "size_mb": 2.1,
+    "readable": true,
+    "fps": 30.0,
+    "frames": 455,
+    "duration_s": 15.17,
+    "width": 1280,
+    "height": 720,
+    "codec": "h264",
+    "rotation_meta": 0,
+    "decoded_width": 1280,
+    "decoded_height": 720,
+    "preview": "data/videos/new/previews/ba23a925-3ce6-458a-8c17-c4aea165ab89.jpg",
+    "people_per_sampled_frame": [
+      2,
+      2,
+      3,
+      3,
+      0,
+      1,
+      3,
+      1,
+      4,
+      3,
+      3,
+      4
+    ]
   }
 ]

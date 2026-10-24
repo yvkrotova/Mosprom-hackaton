@@ -4,6 +4,7 @@
 его можно было прогнать в тестах внутри процесса.
 """
 
+import json
 import logging
 import threading
 from pathlib import Path
@@ -65,6 +66,47 @@ class HeartbeatThread(threading.Thread):
             self.join(timeout=self._interval_s + 5)
 
 
+def config_fingerprint(config: SourceConfig) -> str:
+    """Что влияет на анализ: зоны и правила (статус источника и heartbeat — нет)."""
+    zones = [z.model_dump(mode="json", exclude={"created_at", "updated_at"}) for z in config.zones]
+    rules = [r.model_dump(mode="json", exclude={"created_at", "updated_at"}) for r in config.rules]
+    return json.dumps({"zones": zones, "rules": rules}, sort_keys=True)
+
+
+class ConfigWatcher(threading.Thread):
+    """Раз в interval_s перечитывает конфигурацию источника; изменилась — отдаёт её конвейеру.
+    Так правки зон и правил у запущенного источника применяются без перезапуска воркера
+    (перезапуск начал бы видеофайл сначала и повторил бы тревоги)."""
+
+    def __init__(self, load, apply, first: SourceConfig, interval_s: float) -> None:
+        super().__init__(name="config-watcher", daemon=True)
+        self._load, self._apply = load, apply
+        self._fingerprint = config_fingerprint(first)
+        self._interval_s = interval_s
+        self._stopped = threading.Event()
+
+    def check(self) -> bool:
+        """Одна проверка. True — конфигурация изменилась и передана конвейеру."""
+        try:
+            config = self._load()
+        except Exception as exc:  # backend недоступен — попробуем в следующий раз
+            logger.warning("Конфигурация не перечитана: %s", exc)
+            return False
+        fingerprint = config_fingerprint(config)
+        if fingerprint == self._fingerprint:
+            return False
+        self._fingerprint = fingerprint
+        self._apply(config)
+        return True
+
+    def run(self) -> None:
+        while not self._stopped.wait(self._interval_s):
+            self.check()
+
+    def stop(self) -> None:
+        self._stopped.set()
+
+
 def run_worker(
     source_id: str,
     client: BackendClient,
@@ -118,6 +160,7 @@ def run_worker(
         max_rate_hz=settings.tracks_push_hz,
     )
     detector: Detector | None = None
+    watcher: ConfigWatcher | None = None
     status, error, code = "stopped", None, EXIT_OK
     try:
         detector = build_detector(
@@ -131,6 +174,13 @@ def run_worker(
         frames = build_frame_source(config, detector, realtime)
         pipeline = Pipeline(config, detector, client, tracker_config=settings.tracker_config)
         state["stats"] = pipeline.stats
+        watcher = ConfigWatcher(
+            lambda: client.get_config(source_id),
+            pipeline.request_config,
+            config,
+            settings.config_reload_s,
+        )
+        watcher.start()
         heartbeat.start()
         live.start()
         logger.info("Старт: источник %s, детектор %s (%s), трекер %s", config.source.name,
@@ -151,6 +201,8 @@ def run_worker(
         logger.exception("Ошибка конвейера")
         status, error, code = "error", f"{type(exc).__name__}: {exc}", EXIT_PIPELINE_ERROR
     finally:
+        if watcher is not None:
+            watcher.stop()
         heartbeat.stop()
         live.stop()
         if detector is not None:

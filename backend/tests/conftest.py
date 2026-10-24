@@ -32,6 +32,8 @@ def settings(tmp_path: Path) -> Settings:
         detector="mock",
         # Фронтенд на «/» перехватил бы маршруты, которые тесты добавляют после создания app.
         frontend_dir=None,
+        # Тесты загрузки не должны сами запускать воркеры; автозапуск проверяется отдельно.
+        auto_start_on_upload=False,
     )
 
 

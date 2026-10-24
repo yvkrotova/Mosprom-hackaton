@@ -81,13 +81,14 @@ def seed(
 def seed_videos(
     settings: Settings, manifest_path: Path | None = None
 ) -> list[tuple[str, str, bool]]:
-    """Источники из data/videos/manifest.json: зоны, правило danger_zone на каждую зону и
-    run_fast_movement на весь кадр (параметры правил — rule_params манифеста). Без дублей.
-    Возвращает [(id ролика, source_id, создан ли)]; ролики без файла пропускаются."""
+    """Источники из data/videos/manifest.json. Правила создаются тем же путём, что в интерфейсе:
+    зоны со сценариями из zones[].scenario_types (по умолчанию danger_zone) и правила по умолчанию
+    (ensure_default_rules — бег на весь кадр). Без дублей. Возвращает [(id ролика, source_id,
+    создан ли)]; ролики без файла пропускаются."""
     import json
 
     from app.config import BACKEND_DIR
-    from app.pipeline.scenarios import get_scenario
+    from app.services import rule_service
 
     manifest_path = manifest_path or BACKEND_DIR / "data" / "videos" / "manifest.json"
     videos = json.loads(manifest_path.read_text(encoding="utf-8"))["videos"]
@@ -114,28 +115,16 @@ def seed_videos(
                     analysis_fps=settings.default_analysis_fps,
                 )
                 session.add(source)
-                zones = [
-                    Zone(source=source, name=z["name"], polygon=z["polygon"])
-                    for z in v.get("zones", [])
-                ]
-                session.add_all(zones)
-                session.flush()
-                rule_params = v.get("rule_params", {})
-                for scenario in v.get("rules", []):
-                    params = get_scenario(scenario).ParamsModel(**rule_params.get(scenario, {}))
-                    targets = [z.id for z in zones] if scenario == "danger_zone" else [None]
-                    for zone_id in targets:
-                        session.add(
-                            Rule(
-                                source=source,
-                                zone_id=zone_id,
-                                scenario_type=scenario,
-                                priority=Priority.HIGH,
-                                params=params.model_dump(mode="json"),
-                            )
-                        )
+                session.commit()
+                for z in v.get("zones", []):
+                    zone = Zone(source_id=source.id, name=z["name"], polygon=z["polygon"])
+                    session.add(zone)
+                    session.commit()
+                    rule_service.sync_zone_rules(
+                        session, zone, z.get("scenario_types"), creating=True
+                    )
+                rule_service.ensure_default_rules(session, source.id)
                 out.append((v["id"], source.id, True))
-            session.commit()
     finally:
         engine.dispose()
     return out

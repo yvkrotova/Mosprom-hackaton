@@ -1,15 +1,18 @@
 """Источники видео: CRUD, загрузка файла, кадр-превью."""
 
+import logging
 from typing import Annotated
 
 from fastapi import APIRouter, File, Form, Query, Response, UploadFile, status
 
 from app.api.deps import DbSession, LiveDep, SettingsDep, WorkersDep
 from app.errors import NotFoundError
+from app.schemas.enums import SourceStatus
 from app.schemas.sources import SourceCreate, SourceOut, SourceUpdate
-from app.services import source_service
+from app.services import rule_service, source_service
 
 router = APIRouter(tags=["sources"])
+logger = logging.getLogger(__name__)
 
 
 @router.get("/sources", response_model=list[SourceOut])
@@ -19,7 +22,9 @@ def list_sources(db: DbSession) -> list[SourceOut]:
 
 @router.post("/sources", response_model=SourceOut, status_code=status.HTTP_201_CREATED)
 def create_source(body: SourceCreate, db: DbSession, settings: SettingsDep) -> SourceOut:
-    return SourceOut.model_validate(source_service.create_source(db, settings, body))
+    source = source_service.create_source(db, settings, body)
+    rule_service.ensure_default_rules(db, source.id)  # бег и др. — без ручной настройки
+    return SourceOut.model_validate(source)
 
 
 @router.post(
@@ -31,6 +36,7 @@ def create_source(body: SourceCreate, db: DbSession, settings: SettingsDep) -> S
 def upload_source(
     db: DbSession,
     settings: SettingsDep,
+    workers: WorkersDep,
     file: Annotated[UploadFile, File(description="Видео: mp4, avi, mov, mkv, webm")],
     name: Annotated[str, Form(min_length=1, max_length=200)],
     site: Annotated[str | None, Form(max_length=200)] = None,
@@ -39,6 +45,17 @@ def upload_source(
     source = source_service.upload_video(
         db, settings, file.file, file.filename, name, site or None, analysis_fps
     )
+    rule_service.ensure_default_rules(db, source.id)
+    if settings.auto_start_on_upload:
+        # Анализ сразу после загрузки. Ошибка запуска не ломает загрузку: источник создан,
+        # статус error с текстом причины.
+        try:
+            workers.start(db, source)
+        except Exception as exc:
+            logger.exception("Автозапуск анализа источника %s не удался", source.id)
+            source_service.set_source_status(
+                db, workers.hub, source, SourceStatus.ERROR, f"Автозапуск не удался: {exc}"
+            )
     return SourceOut.model_validate(source)
 
 

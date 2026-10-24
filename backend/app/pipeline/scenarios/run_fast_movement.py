@@ -9,8 +9,10 @@
 Подтверждение (confirm_window_s), завершение (end_window_s, gap_tolerance_s) и тревоги делает
 EpisodeManager одинаково для всех сценариев. С зоной — только когда ноги внутри полигона.
 
-Порог по умолчанию 1.5 — по калибровке на тестовых роликах (docs/BENCHMARKS.md): бег 1.8–2.2,
-ходьба ≤ 0.6. Подтверждён частично: бег есть только в одном ролике.
+Дефолты — по калибровке на тестовых роликах (docs/BENCHMARKS.md): порог 1.7 — между быстрым
+подходом к месту аварии (до 1.59, ролик coils) и бегом (медианы 1.8–2.2, KTH); ходьба ≤ 0.72.
+confirm_window_s 0.6 и min_track_age_s 0.3 — бегущий в KTH виден ~1 с; все 4 пробежки находятся
+при порогах 1.5–1.8 и окнах 0.5–0.6. Подтверждены частично: бег есть только в одном ролике.
 """
 
 from collections.abc import Sequence
@@ -42,7 +44,7 @@ class RunFastParams(BaseScenarioParams):
         description="Классы объектов, у которых проверяется скорость",
     )
     confirm_window_s: float = Field(
-        0.8,
+        0.6,
         ge=0,
         le=10,
         description="Сколько секунд видео скорость должна держаться выше порога до тревоги",
@@ -51,7 +53,7 @@ class RunFastParams(BaseScenarioParams):
         1.0, ge=0, le=10, description="Скорость ниже порога продолжения дольше этого — конец, с"
     )
     speed_threshold: float = Field(
-        1.5,
+        1.7,
         ge=0.2,
         le=10,
         description="Порог, «ростов человека в секунду» (не м/с): ходьба ≈ 0.6–1.0, бег ≈ 2–3",
@@ -66,7 +68,7 @@ class RunFastParams(BaseScenarioParams):
         0.6, ge=0.2, le=3, description="Окно оценки скорости (регрессия по точкам ног), с"
     )
     min_track_age_s: float = Field(
-        0.5, ge=0, le=10, description="Трек моложе этого — скорость неизвестна, с"
+        0.3, ge=0, le=10, description="Трек моложе этого — скорость неизвестна, с"
     )
     min_points: int = Field(4, ge=2, le=100, description="Минимум наблюдений в окне скорости")
     max_height_change: float = Field(

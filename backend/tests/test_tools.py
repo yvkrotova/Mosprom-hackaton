@@ -118,21 +118,25 @@ def test_seed_videos_from_manifest(settings, tmp_path, demo_video):
     manifest = tmp_path / "manifest.json"
     manifest.write_text(json.dumps({"videos": [
         {"id": "demo", "file": str(demo_video), "title": "Демо",
-         "zones": [{"name": "Зона", "polygon": [[0.3, 0.4], [0.7, 0.4], [0.7, 0.9], [0.3, 0.9]]}],
-         "rules": ["danger_zone", "run_fast_movement"],
-         "rule_params": {"run_fast_movement": {"confirm_window_s": 0.4}}},
-        {"id": "missing", "file": str(tmp_path / "nope.mp4"), "title": "Нет файла", "rules": []},
+         "zones": [{"name": "Зона", "polygon": [[0.3, 0.4], [0.7, 0.4], [0.7, 0.9], [0.3, 0.9]]},
+                   {"name": "Проход", "scenario_types": [],
+                    "polygon": [[0.0, 0.0], [0.2, 0.0], [0.2, 0.2]]}]},
+        {"id": "missing", "file": str(tmp_path / "nope.mp4"), "title": "Нет файла"},
     ]}), encoding="utf-8")  # fmt: skip
     first = seed_videos(settings, manifest)
     again = seed_videos(settings, manifest)
     assert [c for _, _, c in first] == [True] and [c for _, _, c in again] == [False]
     engine = make_engine(settings.database_url)
     with make_session_factory(engine)() as s:
-        rules = {r.scenario_type: r for r in s.query(Rule).all()}
-        assert rules["danger_zone"].zone_id is not None
-        assert rules["run_fast_movement"].zone_id is None
-        assert rules["run_fast_movement"].params["confirm_window_s"] == 0.4
-        assert rules["run_fast_movement"].params["speed_threshold"] == 1.5
+        rules = s.query(Rule).all()
+        zones = {z.name: z.id for z in s.query(Zone).all()}
+        # Зона без явного выбора — danger_zone (как раньше); зона с [] — без правил;
+        # бег — правило по умолчанию на весь кадр с дефолтными параметрами.
+        assert sorted((r.scenario_type, r.zone_id) for r in rules) == sorted(
+            [("danger_zone", zones["Зона"]), ("run_fast_movement", None)]
+        )
+        run = next(r for r in rules if r.scenario_type == "run_fast_movement")
+        assert run.auto_created and run.params["speed_threshold"] == 1.7
     engine.dispose()
 
 

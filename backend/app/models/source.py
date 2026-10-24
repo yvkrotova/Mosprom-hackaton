@@ -22,6 +22,9 @@ class Source(IdMixin, TimestampMixin, Base):
     last_error: Mapped[str | None] = mapped_column(Text)
     last_heartbeat_at: Mapped[datetime | None] = mapped_column(UtcDateTime)
     analysis_fps: Mapped[float] = mapped_column(Float)
+    # Сценарии, правила по умолчанию для которых уже создавались (ensure_default_rules). Удалённое
+    # или выключенное пользователем автоправило по этому списку заново не создаётся.
+    defaults_applied: Mapped[list[str] | None] = mapped_column(JSON, default=list)
 
     zones: Mapped[list["Zone"]] = relationship(
         back_populates="source", cascade="all, delete-orphan", passive_deletes=True
@@ -52,5 +55,7 @@ class Rule(IdMixin, TimestampMixin, Base):
     priority: Mapped[str] = mapped_column(String(16), default=Priority.HIGH)
     params: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     version: Mapped[int] = mapped_column(Integer, default=1)
+    # Создано автоматически (сценарий с auto_enable) — фронт помечает «по умолчанию».
+    auto_created: Mapped[bool] = mapped_column(Boolean, default=False)
 
     source: Mapped[Source] = relationship(back_populates="rules")

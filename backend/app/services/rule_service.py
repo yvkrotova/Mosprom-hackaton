@@ -7,9 +7,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.errors import NotFoundError, UnprocessableError
-from app.models import Rule, Zone
+from app.models import Rule, Source, Zone
 from app.pipeline.interfaces import ScenarioRule
 from app.pipeline.scenarios import get_scenario, list_scenarios
+from app.schemas.enums import Priority
 from app.schemas.rules import RuleCreate, RuleUpdate, ScenarioInfo
 from app.services.source_service import get_source
 from app.services.zone_service import get_zone
@@ -22,6 +23,7 @@ def scenario_infos() -> list[ScenarioInfo]:
             title=cls.title,
             description=cls.description,
             requires_zone=cls.requires_zone,
+            auto_enable=cls.auto_enable,
             params_schema=cls.ParamsModel.model_json_schema(),
             defaults=cls.ParamsModel().model_dump(mode="json"),
         )
@@ -139,4 +141,91 @@ def update_rule(session: Session, rule_id: str, body: RuleUpdate) -> Rule:
 
 def delete_rule(session: Session, rule_id: str) -> None:
     session.delete(get_rule(session, rule_id))
+    session.commit()
+
+
+# --- Правила по умолчанию и сценарии зоны --------------------------------------------------------
+
+# Сценарии, которые получает новая зона, если клиент не прислал scenario_types (как раньше).
+ZONE_DEFAULT_SCENARIOS = ("danger_zone",)
+
+
+def _default_rule(
+    source_id: str, zone_id: str | None, cls: type[ScenarioRule], *, auto: bool
+) -> Rule:
+    return Rule(
+        source_id=source_id,
+        zone_id=zone_id,
+        scenario_type=str(cls.scenario_type),
+        enabled=True,
+        priority=Priority.HIGH,
+        params=cls.ParamsModel().model_dump(mode="json"),
+        version=1,
+        auto_created=auto,
+    )
+
+
+def ensure_default_rules(session: Session, source_id: str) -> list[Rule]:
+    """Для каждого сценария с auto_enable (и без обязательной зоны) — правило на весь кадр с
+    параметрами по умолчанию, если у источника его ещё нет. Идемпотентно: применённые сценарии
+    запоминаются в source.defaults_applied, поэтому удалённое или выключенное пользователем
+    правило заново не создаётся. Возвращает созданные правила."""
+    source = session.get(Source, source_id)
+    if source is None:
+        raise NotFoundError("Источник не найден", code="SOURCE_NOT_FOUND", source_id=source_id)
+    applied = set(source.defaults_applied or [])
+    existing = {r.scenario_type for r in source.rules}
+    created = []
+    for cls in list_scenarios():
+        key = str(cls.scenario_type)
+        if not cls.auto_enable or cls.requires_zone or key in applied:
+            continue
+        if key not in existing:
+            rule = _default_rule(source_id, None, cls, auto=True)
+            session.add(rule)
+            created.append(rule)
+        applied.add(key)
+    if sorted(applied) != (source.defaults_applied or []):
+        source.defaults_applied = sorted(applied)
+    session.commit()
+    return created
+
+
+def zone_scenarios(session: Session, zone_id: str) -> list[str]:
+    """Сценарии, для которых у зоны есть правило."""
+    return sorted(
+        {r for r in session.scalars(select(Rule.scenario_type).where(Rule.zone_id == zone_id))}
+    )
+
+
+def sync_zone_rules(
+    session: Session, zone: Zone, scenario_types: list[str] | None, *, creating: bool
+) -> None:
+    """Правила зоны по выбранным сценариям (только сценарии с requires_zone). None при создании
+    зоны — ZONE_DEFAULT_SCENARIOS (danger_zone, как раньше); None при изменении — без изменений.
+    Новые правила — с параметрами по умолчанию; снятая галочка удаляет правило этой зоны."""
+    if scenario_types is None:
+        if not creating:
+            return
+        scenario_types = list(ZONE_DEFAULT_SCENARIOS)
+    wanted = []
+    for key in dict.fromkeys(scenario_types):
+        cls = _scenario(key)
+        if not cls.requires_zone:
+            raise UnprocessableError(
+                f"Сценарий «{key}» не привязывается к зоне — он работает на весь кадр",
+                code="SCENARIO_NOT_ZONAL",
+                scenario_type=key,
+            )
+        wanted.append(cls)
+    existing = {
+        r.scenario_type: r for r in session.scalars(select(Rule).where(Rule.zone_id == zone.id))
+    }
+    for cls in wanted:
+        if str(cls.scenario_type) not in existing:
+            session.add(_default_rule(zone.source_id, zone.id, cls, auto=False))
+    wanted_keys = {str(c.scenario_type) for c in wanted}
+    for key, rule in existing.items():
+        if key not in wanted_keys and _scenario(key).requires_zone:
+            session.delete(rule)
     session.commit()

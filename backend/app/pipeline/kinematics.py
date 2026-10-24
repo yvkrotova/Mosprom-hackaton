@@ -40,9 +40,13 @@ def regression_velocity(points: list[TrackPoint]) -> tuple[float, float] | None:
     return vx, vy
 
 
-def touches_edge(bbox: tuple[float, float, float, float], margin: float = EDGE) -> bool:
+def touches_edge(
+    bbox: tuple[float, float, float, float], margin: float = EDGE, *, sides: bool = True
+) -> bool:
+    """Касается ли рамка края кадра. sides=False — только верх и низ."""
     x1, y1, x2, y2 = bbox
-    return x1 <= margin or y1 <= margin or x2 >= 1 - margin or y2 >= 1 - margin
+    vertical = y1 <= margin or y2 >= 1 - margin
+    return vertical or (sides and (x1 <= margin or x2 >= 1 - margin))
 
 
 def estimate_speed(
@@ -63,8 +67,11 @@ def estimate_speed(
         return SpeedEstimate(None, "трек не подтверждён")
     if ts - track.first_seen_ts < min_track_age_s:
         return SpeedEstimate(None, "трек слишком молодой")
-    if touches_edge(track.bbox):
-        return SpeedEstimate(None, "рамка у края кадра")
+    # Обрезан верх — рамка ниже роста и скорость завышена; обрезан низ — «ноги» это край кадра.
+    # Обрезанный бок только занижает скорость (центр рамки отстаёт), ложной тревоги не даст —
+    # поэтому человек, входящий в кадр сбоку, оценивается сразу (бегущий виден ~1 с, KTH).
+    if touches_edge(track.bbox, sides=False):
+        return SpeedEstimate(None, "рамка у верхнего или нижнего края кадра")
     pts = window_points(track, ts, window_s)
     if len(pts) < min_points:
         return SpeedEstimate(None, "мало точек в окне")

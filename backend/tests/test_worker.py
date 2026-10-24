@@ -68,8 +68,12 @@ def test_worker_processes_video_and_reports(client, app, settings, configured_so
 
     source = client.get(f"/api/v1/sources/{src}").json()
     assert source["status"] == "stopped"  # конец видео
-    events = client.get("/api/v1/events", params={"source_id": src}).json()["items"]
+    # Сценарий danger_zone даёт ровно 2 эпизода; правило бега создаётся само (auto_enable) и
+    # ловит второго человека mock-сцены: он за 1 с перебегает в зону (~2.2 роста/с).
+    all_events = client.get("/api/v1/events", params={"source_id": src}).json()["items"]
+    events = [e for e in all_events if e["scenario_type"] == "danger_zone"]
     assert len(events) == 2
+    assert [e["scenario_type"] for e in all_events].count("run_fast_movement") == 1
     assert all(e["state"] == "ended" for e in events)
     for e in events:
         kinds = sorted(ev["kind"] for ev in e["evidence"])
@@ -82,7 +86,7 @@ def test_worker_processes_video_and_reports(client, app, settings, configured_so
     assert stat[-1].detector_kind == "mock" and stat[-1].inference_ms_avg > 0
     # Одна тревога на эпизод.
     created = [m for m in app.state.hub.history if m["type"] == "event.created"]
-    assert len(created) == 2
+    assert len(created) == len(all_events) == 3
 
 
 def test_detector_error_sets_source_error(client, settings, configured_source):
@@ -252,7 +256,9 @@ def test_e2e_upload_start_events(live, settings, mock_video):
 
     source = client.get(f"/api/v1/sources/{src}").json()
     assert source["status"] == "stopped", source["last_error"]
-    page = client.get("/api/v1/events", params={"source_id": src}).json()
+    page = client.get(
+        "/api/v1/events", params={"source_id": src, "scenario_type": "danger_zone"}
+    ).json()
     assert page["total"] == 2
     for item in page["items"]:
         detail = client.get(f"/api/v1/events/{item['id']}").json()
