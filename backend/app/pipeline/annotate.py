@@ -7,6 +7,7 @@
 from collections.abc import Sequence
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
 import cv2
 import numpy as np
@@ -16,6 +17,7 @@ from app.pipeline.interfaces import Track, ZoneGeometry
 RED = (40, 40, 230)
 GREEN = (80, 200, 80)
 GRAY = (170, 170, 170)
+YELLOW = (0, 210, 250)
 WHITE = (255, 255, 255)
 BLACK = (0, 0, 0)
 MIN_SIDE = 320  # кадр-доказательство меньше этого по короткой стороне увеличивается
@@ -104,6 +106,10 @@ def _px(points: Sequence[Sequence[float]], w: int, h: int) -> np.ndarray:
     return np.array([[round(x * w), round(y * h)] for x, y in points], dtype=np.int32)
 
 
+# Стиль фигур сценария (RuleHit.extra["shapes"]) — одинаково для любого сценария.
+SHAPE_STYLES = {"candidate": (YELLOW, 2), "violation": (RED, 3), "info": (GRAY, 1)}
+
+
 def annotate_frame(
     image: np.ndarray | None,
     width: int,
@@ -116,12 +122,16 @@ def annotate_frame(
     *,
     violator_label: str | None = None,
     trail: Sequence[tuple[float, float]] | None = None,
-    dim_others: bool = False,
+    shapes: Sequence[dict[str, Any]] | None = None,
 ) -> np.ndarray:
-    """Копия кадра с разметкой. Без изображения (replay без видео) рисует на сером фоне.
+    """Копия кадра с разметкой — единая для всех сценариев. Без изображения рисует на сером фоне.
 
-    violator_label — крупная подпись у нарушителя («БЕГ / РЕЗКОЕ ПЕРЕМЕЩЕНИЕ · 2.4 роста/с»);
-    trail — хвост траектории ног нарушителя в долях кадра; dim_others — остальные люди серым.
+    - зоны: зелёный контур, если свободны; зона нарушения — полупрозрачная красная заливка;
+    - нарушитель (violator_track_id) — красная рамка и крупная подпись violator_label;
+      остальные люди — тонкие серые рамки (видны, но не нарушают);
+    - trail — хвост траектории ног нарушителя в долях кадра;
+    - shapes — фигуры сценария [{"polygon"|"bbox", "style", "label"}], style —
+      candidate — жёлтый контур, violation — красный, info — тонкий серый.
     """
     canvas = image.copy() if image is not None else np.full((height, width, 3), 50, dtype=np.uint8)
     h, w = canvas.shape[:2]
@@ -135,11 +145,30 @@ def annotate_frame(
 
     overlay = canvas.copy()
     for zone in zones:
-        color = RED if zone.id == violation_zone_id else (0, 200, 230)
         pts = _px(zone.polygon, w, h)
-        cv2.fillPoly(overlay, [pts], color)
-        cv2.polylines(canvas, [pts], isClosed=True, color=color, thickness=thickness)
-    cv2.addWeighted(overlay, 0.25, canvas, 0.75, 0, dst=canvas)
+        violated = zone.id == violation_zone_id
+        if violated:
+            cv2.fillPoly(overlay, [pts], RED)
+        cv2.polylines(canvas, [pts], isClosed=True, color=RED if violated else GREEN,
+                      thickness=thickness)  # fmt: skip
+    cv2.addWeighted(overlay, 0.3, canvas, 0.7, 0, dst=canvas)
+
+    texts = []
+    for shape in shapes or []:
+        color, line = SHAPE_STYLES.get(shape.get("style", "info"), SHAPE_STYLES["info"])
+        if shape.get("polygon"):
+            pts = _px(shape["polygon"], w, h)
+            cv2.polylines(canvas, [pts], isClosed=True, color=color, thickness=line + thickness - 2)
+            x, y = pts[:, 0].min(), pts[:, 1].min()
+        elif shape.get("bbox"):
+            x1, y1, x2, y2 = _px([shape["bbox"][:2], shape["bbox"][2:]], w, h).flatten()
+            cv2.rectangle(canvas, (x1, y1), (x2, y2), color, line + thickness - 2)
+            x, y = x1, y1
+        else:
+            continue
+        if shape.get("label"):
+            size = round(font_px * 0.85)
+            texts.append((shape["label"], (int(x), max(0, int(y) - size - 8)), size, WHITE, color))
 
     if trail and len(trail) > 1:
         pts = _px(trail, w, h)
@@ -148,19 +177,15 @@ def annotate_frame(
         for p in pts:
             cv2.circle(canvas, tuple(p), thickness + 1, WHITE, -1, cv2.LINE_AA)
 
-    texts = []
     for track in tracks:
-        is_violator = track.track_id == violator_track_id
-        color = RED if is_violator else (GRAY if dim_others else GREEN)
+        is_violator = violator_track_id is not None and track.track_id == violator_track_id
         x1, y1, x2, y2 = _px([track.bbox[:2], track.bbox[2:]], w, h).flatten()
-        line = thickness + 1 if is_violator else (1 if dim_others else thickness)
-        cv2.rectangle(canvas, (x1, y1), (x2, y2), color, line)
-        if is_violator and violator_label:
-            label = f"#{track.track_id} {violator_label}"
-        else:
-            label = f"#{track.track_id} {track.confidence:.2f}"
-        size = font_px if is_violator else round(font_px * 0.75)
-        texts.append((label, (x1, max(0, y1 - size - 8)), size, WHITE, color))
+        if not is_violator:
+            cv2.rectangle(canvas, (x1, y1), (x2, y2), GRAY, 1)
+            continue
+        cv2.rectangle(canvas, (x1, y1), (x2, y2), RED, thickness + 1)
+        label = f"#{track.track_id} {violator_label}" if violator_label else f"#{track.track_id}"
+        texts.append((label, (x1, max(0, y1 - font_px - 8)), font_px, WHITE, RED))
 
     line_h = round(font_px * 1.35)
     cv2.rectangle(canvas, (0, 0), (w, line_h * len(caption_lines) + 10), BLACK, -1)

@@ -3,6 +3,7 @@
 import uuid
 from typing import Any
 
+from app.pipeline.interfaces import Frame, FrameContext, FrameDetections, Track
 from app.schemas.internal import SourceConfig
 
 T_ISO = "2026-10-23T09:00:00Z"
@@ -88,3 +89,18 @@ def summary(episodes: list[dict[str, Any]]) -> list[tuple]:
          e["video_ts_detected"], e["confidence"], e["state"])
         for e in episodes
     ]  # fmt: skip
+
+
+def make_context(tracks: list[Track], ts: float = 0.0, *, scene=None, image=None) -> FrameContext:
+    """Контекст кадра для прямого вызова правила: все треки считаются подтверждёнными."""
+    h, w = image.shape[:2] if image is not None else (720, 1280)
+    dets = FrameDetections(frame_idx=round(ts * 100), video_ts=ts, frame_w=w, frame_h=h,
+                           inference_ms=0.0, model_version="test")  # fmt: skip
+    return FrameContext(
+        frame=Frame("test", dets.frame_idx, ts, w, h, image),
+        video_ts=ts,
+        confirmed_tracks=[t for t in tracks if t.state == "confirmed"],
+        all_tracks=list(tracks),
+        detections=dets,
+        scene=scene,
+    )

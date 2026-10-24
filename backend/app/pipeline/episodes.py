@@ -1,15 +1,21 @@
-"""EpisodeManager: из покадровых нарушений (RuleHit) делает эпизоды — одно нарушение = одно событие.
+"""EpisodeManager: из покадровых сигналов правил (RuleHit) делает эпизоды: нарушение = одно событие.
 
-Ключ эпизода: (source_id, scenario_type, zone_id, track_id). Все длительности — по video_ts.
+Одна машина состояний для ЛЮБОГО сценария (правила ничего не хранят между кадрами).
+Ключ эпизода: (source_id, scenario_type, zone_id, track_id); track_id = None — нарушение зоны.
+Все длительности — по video_ts.
 
-    нет эпизода ──hit──▶ кандидат ──держится confirm_window_s──▶ эпизод active (тревога + кадры)
-                          │ нет hit > gap_tolerance_s                │ hit — продолжение
-                          ▼                                          │ нет hit > gap_tolerance_s
-                       забыт (событий нет)                           ▼ или конец видео
-                                                                  эпизод ended
+                   VIOLATION                VIOLATION держится confirm_window_s
+    нет эпизода ─────────────▶ кандидат ───────────────────────────────▶ эпизод active
+         ▲                        │ нет VIOLATION дольше                  │ тревога + кадры;
+         └────────────────────────┘ min(gap_tolerance_s, end_window_s)    │ VIOLATION/HOLD —
+                                                                           │ продолжение
+    эпизод ended ◀── нарушения явно нет (нет хита) дольше end_window_s ───┤
+                 ◀── нет VIOLATION/HOLD дольше gap_tolerance_s (UNKNOWN, трек пропал)
+                 ◀── конец видео / остановка
 
-Пропуск наблюдения короче gap_tolerance_s (перекрытие, мигание детекции) не завершает эпизод
-и не создаёт новый. Обновления активного эпизода уходят не чаще update_interval_s.
+Начало эпизода — время первого VIOLATION кандидата. HOLD не открывает кандидата, только продолжает
+идущий эпизод (гистерезис). UNKNOWN не продолжает и не прерывает. Обновления активного эпизода
+уходят не чаще update_interval_s.
 """
 
 import logging
@@ -20,14 +26,22 @@ from typing import Any, Protocol
 
 from app.models.base import utcnow
 from app.pipeline.annotate import annotate_frame, encode_jpeg
-from app.pipeline.interfaces import BaseScenarioParams, Frame, RuleHit, Track, ZoneGeometry
+from app.pipeline.interfaces import (
+    BaseScenarioParams,
+    Frame,
+    HitLevel,
+    RuleHit,
+    Track,
+    ZoneGeometry,
+)
 from app.schemas.enums import EpisodeState, EvidenceKind, Priority, ScenarioType
 from app.schemas.internal import EventUpsert
 
 logger = logging.getLogger(__name__)
 
-EpisodeKey = tuple[str, str, str | None, int]
+EpisodeKey = tuple[str, str, str | None, int | None]
 TRAIL_S = 1.5  # хвост траектории ног на кадре-доказательстве
+_LEVEL_ORDER = {HitLevel.VIOLATION: 3, HitLevel.HOLD: 2, HitLevel.UNKNOWN: 1}
 
 
 def _trail(track: Track | None, ts: float) -> list[tuple[float, float]] | None:
@@ -39,6 +53,19 @@ def _trail(track: Track | None, ts: float) -> list[tuple[float, float]] | None:
         for p in track.history
         if ts - p.video_ts <= TRAIL_S
     ]
+
+
+def shape_bbox(shape: dict[str, Any]) -> tuple[float, float, float, float] | None:
+    """Ограничивающая рамка фигуры из RuleHit.extra["shapes"] (bbox или polygon) в долях кадра."""
+    if shape.get("bbox"):
+        return tuple(shape["bbox"])
+    pts = shape.get("polygon") or []
+    if len(pts) < 2:
+        return None
+    xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+    if max(xs) <= min(xs) or max(ys) <= min(ys):
+        return None
+    return (min(xs), min(ys), max(xs), max(ys))
 
 
 class EpisodeSink(Protocol):
@@ -59,14 +86,23 @@ class RuleContext:
     priority: Priority
     version: int
     params: BaseScenarioParams
-    confirms_itself: bool = False
+    zone_ids: tuple[str, ...] = ()  # зоны правила (для zone_states); пусто — весь кадр
+
+    @property
+    def end_window_s(self) -> float:
+        return float(self.params.end_window_s)  # заполнено валидатором BaseScenarioParams
+
+    @property
+    def candidate_gap_s(self) -> float:
+        """Кандидат забывается, если VIOLATION нет дольше этого."""
+        return min(self.params.gap_tolerance_s, self.end_window_s)
 
 
 @dataclass(slots=True)
 class _Candidate:
     rule: RuleContext
-    first_ts: float
-    last_ts: float
+    first_ts: float  # первый VIOLATION — начало будущего эпизода
+    last_ts: float  # последний VIOLATION
 
 
 @dataclass(slots=True)
@@ -74,10 +110,10 @@ class _Episode:
     event_id: str
     rule: RuleContext
     zone_id: str | None
-    track_id: int
+    track_id: int | None
     video_ts_start: float
     video_ts_detected: float
-    last_ts: float
+    last_ts: float  # последний VIOLATION или HOLD
     confidence: float
     detected_at: datetime
     last_sent_ts: float
@@ -117,6 +153,7 @@ class EpisodeManager:
         self.update_interval_s = update_interval_s
         self._candidates: dict[EpisodeKey, _Candidate] = {}
         self._active: dict[EpisodeKey, _Episode] = {}
+        self._last_hits: dict[EpisodeKey, RuleHit] = {}  # сигналы последнего кадра (zone_states)
         self.episodes_confirmed = 0
 
     # --- время -------------------------------------------------------------------------------
@@ -127,55 +164,68 @@ class EpisodeManager:
 
     # --- основной цикл ----------------------------------------------------------------------
 
+    def _key(self, hit: RuleHit) -> EpisodeKey:
+        return (self.source_id, str(hit.scenario_type), hit.zone_id, hit.track_id)
+
     def process(
         self,
         frame: Frame,
         hits: list[RuleHit],
         tracks: list[Track],
-        finished: list[tuple[str, str | None, int]] | None = None,
+        all_tracks: list[Track] | None = None,
     ) -> None:
-        """finished — (scenario_type, zone_id, track_id), которые сценарий объявил завершёнными."""
+        """tracks — подтверждённые треки кадра: эпизод трека, которого нет среди них, считается
+        «неизвестным» (человек пропал), а не «нарушения нет». all_tracks — для доказательства."""
         ts = frame.video_ts
+        present = {t.track_id for t in tracks}
 
-        # 1. Завершаем эпизоды, пропавшие дольше допуска (до учёта новых hit на этом кадре)
-        #    и те, что сценарий объявил законченными.
-        done = {(self.source_id, str(s), z, t) for s, z, t in finished or []}
-        for key, ep in list(self._active.items()):
-            if key in done or ts - ep.last_ts > ep.rule.params.gap_tolerance_s:
-                self._end(key, ep)
-
-        # 2. Один hit на ключ (несколько правил могут дать одно и то же нарушение).
+        # Один сигнал на ключ: самый сильный уровень, затем самая высокая уверенность.
         by_key: dict[EpisodeKey, RuleHit] = {}
         for hit in hits:
-            key = (self.source_id, str(hit.scenario_type), hit.zone_id, hit.track_id)
-            if key not in by_key or hit.confidence > by_key[key].confidence:
+            key = self._key(hit)
+            old = by_key.get(key)
+            if old is None or (_LEVEL_ORDER[hit.level], hit.confidence) > (
+                _LEVEL_ORDER[old.level],
+                old.confidence,
+            ):
                 by_key[key] = hit
+        self._last_hits = by_key
 
+        # 1. Завершение активных эпизодов (до учёта новых сигналов, как раньше).
+        for key, ep in list(self._active.items()):
+            hit = by_key.get(key)
+            elapsed = ts - ep.last_ts
+            if elapsed > ep.rule.params.gap_tolerance_s:
+                self._end(key, ep)  # ни VIOLATION, ни HOLD слишком долго (в т.ч. UNKNOWN)
+                continue
+            explicit_no = hit is None and (ep.track_id is None or ep.track_id in present)
+            if explicit_no and elapsed > ep.rule.end_window_s:
+                self._end(key, ep)
+
+        # 2. Сигналы кадра.
         for key, hit in by_key.items():
             rule = self.rules[hit.rule_id]
             episode = self._active.get(key)
             if episode is not None:
-                episode.last_ts = ts
-                episode.confidence = max(episode.confidence, hit.confidence)
-                episode.absorb(hit.extra)
-                episode.dirty = True
+                if hit.level in (HitLevel.VIOLATION, HitLevel.HOLD):
+                    episode.last_ts = ts
+                    episode.confidence = max(episode.confidence, hit.confidence)
+                    episode.absorb(hit.extra)
+                    episode.dirty = True
                 continue
-            if rule.confirms_itself:
-                # Сценарий уже выдержал окно подтверждения: эпизод с момента начала нарушения.
-                start = float((hit.extra or {}).get("start_ts", ts))
-                self._confirm(key, _Candidate(rule, min(start, ts), ts), hit, rule, frame, tracks)
-                continue
+            if hit.level != HitLevel.VIOLATION:
+                continue  # HOLD и UNKNOWN кандидата не открывают
             cand = self._candidates.get(key)
-            if cand is None or ts - cand.last_ts > cand.rule.params.gap_tolerance_s:
+            if cand is None or ts - cand.last_ts > rule.candidate_gap_s:
                 cand = self._candidates[key] = _Candidate(rule=rule, first_ts=ts, last_ts=ts)
             cand.last_ts = ts
             if ts - cand.first_ts >= rule.params.confirm_window_s:
                 del self._candidates[key]
-                self._confirm(key, cand, hit, rule, frame, tracks)
+                self._confirm(key, cand, hit, rule, frame, all_tracks or tracks)
 
-        # 3. Забываем кандидатов, которые не дотянули до подтверждения.
+        # 3. Забываем кандидатов, у которых давно нет VIOLATION.
         for key, cand in list(self._candidates.items()):
-            if ts - cand.last_ts > cand.rule.params.gap_tolerance_s:
+            if ts - cand.last_ts > cand.rule.candidate_gap_s:
                 del self._candidates[key]
 
         # 4. Периодические обновления активных эпизодов.
@@ -192,19 +242,60 @@ class EpisodeManager:
             self._end(key, ep)
         self._candidates.clear()
 
+    # --- для живого просмотра -------------------------------------------------------------------
+
     @property
     def active_count(self) -> int:
         return len(self._active)
 
     def alerting_track_ids(self) -> set[int]:
         """Треки, по которым сейчас идёт подтверждённый эпизод (тревога уже отправлена)."""
-        return {ep.track_id for ep in self._active.values()}
+        return {ep.track_id for ep in self._active.values() if ep.track_id is not None}
+
+    def candidate_track_ids(self) -> set[int]:
+        """Треки с открытым, но ещё не подтверждённым кандидатом."""
+        return {key[3] for key in self._candidates if key[3] is not None}
 
     def alerting_scenarios(self) -> dict[int, set[str]]:
         out: dict[int, set[str]] = {}
         for ep in self._active.values():
-            out.setdefault(ep.track_id, set()).add(str(ep.rule.scenario_type))
+            if ep.track_id is not None:
+                out.setdefault(ep.track_id, set()).add(str(ep.rule.scenario_type))
         return out
+
+    def zone_states(self) -> list[dict[str, Any]]:
+        """Состояние каждой пары (зона правила, сценарий): violation — идёт эпизод; candidate —
+        открыт кандидат; unknown — правило не может оценить зону (reason); clear — чисто."""
+        pairs: dict[tuple[str, str], dict[str, Any]] = {}
+        for rule in self.rules.values():
+            for zone_id in rule.zone_ids:
+                pairs.setdefault(
+                    (zone_id, str(rule.scenario_type)),
+                    {
+                        "zone_id": zone_id,
+                        "scenario_type": str(rule.scenario_type),
+                        "state": "clear",
+                    },
+                )
+        rank = {"clear": 0, "unknown": 1, "candidate": 2, "violation": 3}
+
+        def raise_to(zone_id, scenario, state, reason=None):
+            item = pairs.get((zone_id, scenario))
+            if item is not None and rank[state] > rank[item["state"]]:
+                item["state"] = state
+                if reason:
+                    item["reason"] = reason
+
+        for (_, scenario, zone_id, _), hit in self._last_hits.items():
+            if hit.level == HitLevel.UNKNOWN and zone_id is not None:
+                raise_to(zone_id, scenario, "unknown", (hit.extra or {}).get("reason"))
+        for _, scenario, zone_id, _ in self._candidates:
+            if zone_id is not None:
+                raise_to(zone_id, scenario, "candidate")
+        for _, scenario, zone_id, _ in self._active:
+            if zone_id is not None:
+                raise_to(zone_id, scenario, "violation")
+        return list(pairs.values())
 
     # --- внутреннее ---------------------------------------------------------------------------
 
@@ -278,14 +369,17 @@ class EpisodeManager:
         self.sink.send_event(ep.event_id, payload.model_dump(mode="json"))
 
     def _send_evidence(self, ep: _Episode, hit: RuleHit, frame: Frame, tracks: list[Track]) -> None:
-        bboxes = [
-            {
-                "label": hit.label,
-                "confidence": round(hit.confidence, 4),
-                "bbox": list(hit.bbox),
-                "track_id": hit.track_id,
-            }
-        ]
+        extra = hit.extra or {}
+        shapes = extra.get("shapes") or []
+        if hit.bbox is not None:
+            bboxes = [{"label": hit.label, "confidence": round(hit.confidence, 4),
+                       "bbox": list(hit.bbox), "track_id": hit.track_id}]  # fmt: skip
+        else:  # нарушение зоны: рамки фигур сценария (например, препятствий)
+            bboxes = [
+                {"label": s.get("label") or hit.label, "confidence": round(hit.confidence, 4),
+                 "bbox": list(b), "track_id": None}
+                for s in shapes if (b := shape_bbox(s)) is not None
+            ]  # fmt: skip
         meta = {
             "video_ts": round(frame.video_ts, 3),
             "frame_time": self.wall(frame.video_ts).isoformat().replace("+00:00", "Z"),
@@ -303,23 +397,20 @@ class EpisodeManager:
                 f"{ep.rule.title} | {self.source_name}",
                 f"{self.wall(frame.video_ts):%Y-%m-%d %H:%M:%S}Z | видео {frame.video_ts:.1f} с",
             ]
-            extra = hit.extra or {}
             violator = next((t for t in tracks if t.track_id == hit.track_id), None)
             annotated = annotate_frame(
                 frame.image,
                 frame.width,
                 frame.height,
-                # Сценарию без зоны полигоны на кадре не нужны.
-                list(self.zones.values())
-                if hit.zone_id or ep.rule.scenario_type == "danger_zone"
-                else [],
+                # Правилу без зоны (весь кадр) полигоны на кадре не нужны.
+                list(self.zones.values()) if ep.rule.zone_ids or hit.zone_id else [],
                 tracks,
                 hit.track_id,
                 hit.zone_id,
                 caption,
                 violator_label=extra.get("label"),
                 trail=_trail(violator, frame.video_ts) if extra.get("trail") else None,
-                dim_others=bool(extra.get("trail")),
+                shapes=shapes,
             )
             self.sink.send_evidence(
                 ep.event_id,

@@ -13,7 +13,7 @@ from typing import Any
 import cv2
 
 from app.pipeline.annotate import encode_jpeg
-from app.pipeline.interfaces import Frame
+from app.pipeline.interfaces import Frame, HitLevel
 from app.pipeline.runner import FrameResult
 
 logger = logging.getLogger(__name__)
@@ -28,6 +28,8 @@ def frame_meta(
     zones_by_track: dict[int, list[str]] = {}
     scenarios_by_track: dict[int, set[str]] = {}
     for hit in result.hits:
+        if hit.track_id is None or hit.level == HitLevel.UNKNOWN:
+            continue  # зонные сигналы — в zone_states; «оценить нельзя» — не нарушение
         scenarios_by_track.setdefault(hit.track_id, set()).add(str(hit.scenario_type))
         if hit.zone_id and hit.zone_id not in zones_by_track.setdefault(hit.track_id, []):
             zones_by_track[hit.track_id].append(hit.zone_id)
@@ -41,7 +43,7 @@ def frame_meta(
         flags = []
         if zones_by_track.get(t.track_id):
             flags.append("in_zone")
-        if info.get("candidate") or (t.track_id in scenarios_by_track and not alerting):
+        if t.track_id in result.candidate_track_ids and not alerting:
             flags.append("candidate")
         if alerting:
             flags.append("violation")
@@ -75,6 +77,7 @@ def frame_meta(
         "fps": fps,
         "detector_kind": detector_kind,
         "tracks": tracks,
+        "zone_states": result.zone_states,
     }
 
 

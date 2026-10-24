@@ -125,7 +125,9 @@ def update_rule(session: Session, rule_id: str, body: RuleUpdate) -> Rule:
         rule.enabled = body.enabled
         bump = True
     if body.params is not None:
-        params = _validate_params(scenario, {**rule.params, **body.params})
+        # Поля, которых больше нет в схеме сценария (старые версии), отбрасываются.
+        stored = {k: v for k, v in rule.params.items() if k in scenario.ParamsModel.model_fields}
+        params = _validate_params(scenario, {**stored, **body.params})
         if params != rule.params:
             rule.params = params
             bump = True

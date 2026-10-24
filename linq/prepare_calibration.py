@@ -6,9 +6,10 @@
 640×640, сохранение пропорций, поля 114, BGR→RGB, /255, NCHW. Иначе статистика активаций при
 калибровке не совпадёт с реальной и точность после квантования просядет.
 
-Формат, который ждёт SDK, мы пока не знаем (tpu_framework.pdf не скачан), поэтому пишем два:
-- npy/<NNNN>.npy — float32 [1, 3, 640, 640], RGB, 0..1 — ровно вход ONNX «images»;
-- png/<NNNN>.png — тот же кадр после letterbox, uint8 RGB 640×640 (если SDK сам нормализует).
+Формат, который ждёт SDK, мы пока не знаем (tpu_framework.pdf не скачан):
+- png/<NNNN>.png — кадр после letterbox, uint8 RGB 640×640 (всегда; ~0.5 МБ на кадр);
+- npy/<NNNN>.npy — float32 [1, 3, 640, 640], RGB, 0..1 — ровно вход ONNX «images» (только с --npy:
+  ~5 МБ на кадр, 200 кадров ≈ 1 ГБ). npy восстанавливается из png: x = png / 255, HWC→CHW.
 calibration.json — откуда каждый кадр (ролик, video_ts) и параметры препроцессинга.
 """
 
@@ -49,13 +50,17 @@ def main() -> int:
     parser.add_argument("--size", type=int, default=640)
     parser.add_argument("--out", type=Path, default=Path(__file__).resolve().parent / "calibration")
     parser.add_argument("--ids", nargs="*")
+    parser.add_argument(
+        "--npy", action="store_true", help="Ещё и float32 .npy (~1 ГБ на 200 кадров)"
+    )
     args = parser.parse_args()
 
     videos = select(args.ids)
     if not videos:
         print("Нет тестовых роликов (backend/data/videos/manifest.json)")
         return 1
-    (args.out / "npy").mkdir(parents=True, exist_ok=True)
+    if args.npy:
+        (args.out / "npy").mkdir(parents=True, exist_ok=True)
     (args.out / "png").mkdir(parents=True, exist_ok=True)
     per_video = [
         args.count // len(videos) + (i < args.count % len(videos)) for i in range(len(videos))
@@ -64,7 +69,8 @@ def main() -> int:
     for entry, k in zip(videos, per_video, strict=True):
         for ts, img in sample(entry, k):
             tensor, info = letterbox(img, args.size)
-            np.save(args.out / "npy" / f"{n:04d}.npy", tensor)
+            if args.npy:
+                np.save(args.out / "npy" / f"{n:04d}.npy", tensor)
             rgb_u8 = (tensor[0].transpose(1, 2, 0) * 255).round().astype(np.uint8)
             cv2.imencode(".png", cv2.cvtColor(rgb_u8, cv2.COLOR_RGB2BGR))[1].tofile(
                 str(args.out / "png" / f"{n:04d}.png")
@@ -84,7 +90,10 @@ def main() -> int:
             "range": [0, 1],
             "letterbox_pad": 114,
         },  # fmt: skip
-        "formats": {"npy": "float32 NCHW 0..1 (вход ONNX)", "png": "uint8 RGB после letterbox"},
+        "formats": {
+            "png": "uint8 RGB после letterbox",
+            **({"npy": "float32 NCHW 0..1 (вход ONNX)"} if args.npy else {}),
+        },
         "items": items,
     }
     (args.out / "calibration.json").write_text(

@@ -19,6 +19,7 @@ from app.pipeline.interfaces import (
     BaseScenarioParams,
     Detector,
     Frame,
+    FrameContext,
     FrameSource,
     RuleHit,
     ScenarioRule,
@@ -94,6 +95,8 @@ class FrameResult:
     # track_id -> сценарии с активным эпизодом / сведения сценариев (скорость и т.п.)
     alerting_scenarios: dict[int, set[str]] = field(default_factory=dict)
     track_info: dict[int, dict] = field(default_factory=dict)
+    candidate_track_ids: set[int] = field(default_factory=set)  # кандидат открыт, не подтверждён
+    zone_states: list[dict] = field(default_factory=list)  # EpisodeManager.zone_states()
 
 
 @dataclass(slots=True)
@@ -132,7 +135,7 @@ class Pipeline:
                     "Правило %s: сценарий %s не найден — пропускаем", rule.id, rule.scenario_type
                 )
                 continue
-            params = cls.ParamsModel.model_validate(rule.params)
+            params = cls.ParamsModel.from_stored(rule.params)
             if rule.zone_id:
                 zones = [self.zones[rule.zone_id]]
             else:
@@ -147,7 +150,7 @@ class Pipeline:
                 priority=Priority(rule.priority),
                 version=rule.version,
                 params=params,
-                confirms_itself=cls.confirms_itself,
+                zone_ids=tuple(z.id for z in zones),
             )
 
         # Трек должен пережить допустимый пропуск наблюдения, иначе после перекрытия
@@ -174,27 +177,40 @@ class Pipeline:
         )
 
     def process_frame(self, frame: Frame) -> FrameResult:
+        """Один кадр: детектор, трекер и анализ сцены — по одному разу; затем все правила читают
+        общий FrameContext; EpisodeManager собирает эпизоды."""
         dets = self.detector.infer(frame)
         self.stats.record(dets.inference_ms, dets.preprocess_ms, dets.postprocess_ms)
         tracks = self.tracker.update(dets)
         confirmed = [t for t in tracks if t.state == "confirmed"]
+        context = FrameContext(
+            frame=frame,
+            video_ts=frame.video_ts,
+            confirmed_tracks=confirmed,
+            all_tracks=tracks,
+            detections=dets,
+            scene=self._analyze_scene(frame, tracks, dets),
+        )
         hits: list[RuleHit] = []
         info: dict[int, dict] = {}
-        finished: list[tuple[str, str | None, int]] = []
         for rule in self.rules:
-            hits.extend(rule.instance.update(confirmed, rule.zones, rule.params, frame.video_ts))
-            for tid, data in rule.instance.track_info().items():
+            hits.extend(rule.instance.update(context, rule.zones, rule.params))
+            for tid, data in rule.instance.describe(context, rule.zones, rule.params).items():
                 info.setdefault(tid, {}).update(data)
-            scenario = str(rule.instance.scenario_type)
-            finished.extend((scenario, zone_id, tid) for tid, zone_id in rule.instance.finished())
-        self.episodes.process(frame, hits, confirmed, finished)
+        self.episodes.process(frame, hits, confirmed, tracks)
         return FrameResult(
             tracks,
             hits,
             self.episodes.alerting_track_ids(),
             self.episodes.alerting_scenarios(),
             info,
+            self.episodes.candidate_track_ids(),
+            self.episodes.zone_states(),
         )
+
+    def _analyze_scene(self, frame: Frame, tracks: list[Track], dets) -> dict | None:
+        """Анализ сцены (модель фона) — только если он нужен хотя бы одному правилу."""
+        return None
 
     def run(
         self,

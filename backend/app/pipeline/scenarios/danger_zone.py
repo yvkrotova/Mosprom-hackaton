@@ -1,4 +1,4 @@
-"""Сценарий «человек в опасной зоне»."""
+"""Сценарий «человек в опасной зоне» — чистая функция кадра: ноги в полигоне → VIOLATION."""
 
 from collections.abc import Sequence
 from typing import cast
@@ -8,9 +8,10 @@ from pydantic import Field
 from app.pipeline.geometry import foot_point, point_in_polygon
 from app.pipeline.interfaces import (
     BaseScenarioParams,
+    FrameContext,
+    HitLevel,
     RuleHit,
     ScenarioRule,
-    Track,
     ZoneGeometry,
 )
 from app.pipeline.scenarios.registry import register_scenario
@@ -34,15 +35,11 @@ class DangerZoneRule(ScenarioRule):
     requires_zone = True
 
     def update(
-        self,
-        tracks: Sequence[Track],
-        zones: Sequence[ZoneGeometry],
-        params: BaseScenarioParams,
-        video_ts: float,
+        self, context: FrameContext, zones: Sequence[ZoneGeometry], params: BaseScenarioParams
     ) -> list[RuleHit]:
         params = cast(DangerZoneParams, params)
         hits: list[RuleHit] = []
-        for track in tracks:
+        for track in context.confirmed_tracks:
             if track.label not in params.labels or track.confidence < params.min_confidence:
                 continue
             feet = foot_point(track.bbox)
@@ -56,8 +53,9 @@ class DangerZoneRule(ScenarioRule):
                             zone_id=zone.id,
                             confidence=track.confidence,
                             bbox=track.bbox,
-                            video_ts=video_ts,
+                            video_ts=context.video_ts,
                             label=track.label,
+                            level=HitLevel.VIOLATION,
                         )
                     )
         return hits

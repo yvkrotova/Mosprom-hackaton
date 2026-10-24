@@ -11,10 +11,11 @@ from abc import ABC, abstractmethod
 from collections import deque
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
-from typing import Any, ClassVar, Literal
+from enum import StrEnum
+from typing import Any, ClassVar, Literal, Self
 
 import numpy as np
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.schemas.cv import Detection, FrameDetections
 from app.schemas.enums import ScenarioType
@@ -24,6 +25,8 @@ __all__ = [
     "Detection",
     "Detector",
     "Frame",
+    "FrameContext",
+    "HitLevel",
     "FrameDetections",
     "FrameSource",
     "RuleHit",
@@ -90,20 +93,53 @@ class ZoneGeometry:
     polygon: list[tuple[float, float]]
 
 
+class HitLevel(StrEnum):
+    """Что правило увидело на кадре. Эпизоды собирает EpisodeManager (одинаково для всех):
+
+    VIOLATION — нарушение есть: открывает кандидата и продолжает эпизод;
+    HOLD — слабее порога начала, но достаточно, чтобы продолжить уже идущий эпизод (гистерезис);
+    UNKNOWN — оценить нельзя (трек молодой, рамка у края, сцена не готова): не продолжает и не
+              прерывает эпизод, но дольше gap_tolerance_s — эпизод завершается.
+    Нет хита — нарушения на этом кадре нет: дольше end_window_s — эпизод завершается.
+    """
+
+    VIOLATION = "violation"
+    HOLD = "hold"
+    UNKNOWN = "unknown"
+
+
 @dataclass(slots=True, frozen=True)
 class RuleHit:
-    """Нарушение на одном кадре. Эпизоды из хитов собирает EpisodeManager."""
+    """Сигнал правила на одном кадре по одному треку (или зоне целиком, если track_id=None)."""
 
     scenario_type: ScenarioType
     rule_id: str
-    track_id: int
+    track_id: int | None  # None — нарушение уровня зоны (например, заблокированный проход)
     zone_id: str | None
     confidence: float
-    bbox: BBoxTuple
+    bbox: BBoxTuple | None  # рамка нарушителя; None у зонных нарушений
     video_ts: float
     label: str = "person"
-    # Данные сценария для события и кадра-доказательства, например {"speed": 2.4}.
+    level: HitLevel = HitLevel.VIOLATION
+    # Метаданные для события и кадра-доказательства (одинаковый смысл для любого сценария):
+    #   details — уходит в event.details (числа: speed, blocked_pct…; EpisodeManager считает *_max);
+    #   label — крупная подпись у нарушителя; trail — рисовать хвост траектории ног;
+    #   shapes — фигуры [{"polygon"|"bbox": 0..1, "style": candidate|violation|info, "label"}];
+    #   reason — почему UNKNOWN (для живого просмотра).
     extra: dict[str, Any] | None = None
+
+
+@dataclass(slots=True)
+class FrameContext:
+    """Всё, что правило знает о кадре. Детектор, трекер и анализ сцены работают ОДИН раз на кадр
+    в Pipeline; правила только читают результат и ничего не хранят между кадрами."""
+
+    frame: Frame
+    video_ts: float
+    confirmed_tracks: list[Track]  # в правила по трекам — только подтверждённые
+    all_tracks: list[Track]  # включая tentative и lost (нужно, например, чтобы маскировать людей)
+    detections: FrameDetections
+    scene: dict[str, Any] | None = None  # zone_id -> ZoneScene (app/pipeline/scene.py) или None
 
 
 class BaseScenarioParams(BaseModel):
@@ -113,11 +149,33 @@ class BaseScenarioParams(BaseModel):
 
     min_confidence: float = Field(0.4, ge=0, le=1, description="Минимальная уверенность детекции")
     confirm_window_s: float = Field(
-        1.0, ge=0, le=60, description="Сколько секунд видео нарушение должно держаться до тревоги"
+        1.0, ge=0, le=600, description="Сколько секунд видео нарушение должно держаться до тревоги"
     )
     gap_tolerance_s: float = Field(
-        2.0, ge=0, le=60, description="Пропуск наблюдения короче этого не завершает эпизод"
+        2.0,
+        ge=0,
+        le=600,
+        description="Нарушение нельзя оценить (человек пропал, сцена не готова) дольше этого — "
+        "эпизод завершается",
     )
+    end_window_s: float | None = Field(
+        None,
+        ge=0,
+        le=600,
+        description="Нарушения явно нет дольше этого — эпизод завершается (по умолчанию = "
+        "gap_tolerance_s)",
+    )
+
+    @model_validator(mode="after")
+    def _default_end_window(self) -> Self:
+        if self.end_window_s is None:
+            self.end_window_s = self.gap_tolerance_s
+        return self
+
+    @classmethod
+    def from_stored(cls, params: dict[str, Any]) -> Self:
+        """Параметры из БД: поля, которых уже нет в схеме (старые версии), отбрасываются."""
+        return cls.model_validate({k: v for k, v in params.items() if k in cls.model_fields})
 
 
 class FrameSource(ABC):
@@ -148,10 +206,11 @@ class Tracker(ABC):
 
 
 class ScenarioRule(ABC):
-    """Сценарий нарушения. Один экземпляр на одно правило из БД.
+    """Сценарий нарушения (паттерн Strategy). Один экземпляр на одно правило из БД.
 
-    Правило не знает про эпизоды и тревоги: на каждом кадре оно только говорит,
-    какие треки сейчас нарушают. Подтверждение, допуск потери и завершение — в EpisodeManager.
+    Правило — ЧИСТАЯ функция кадра: по контексту, зонам и параметрам говорит, где на этом кадре
+    нарушение (VIOLATION / HOLD / UNKNOWN) и с какими метаданными. Никакого состояния между кадрами:
+    подтверждение, гистерезис, допуски, тревоги — в EpisodeManager, одинаково для всех сценариев.
     """
 
     scenario_type: ClassVar[ScenarioType]
@@ -159,32 +218,24 @@ class ScenarioRule(ABC):
     title: ClassVar[str]
     description: ClassVar[str]
     requires_zone: ClassVar[bool] = True
-    # True — сценарий сам выдерживает confirm_window_s и шлёт hit только для подтверждённого
-    # нарушения (с extra["start_ts"] — началом эпизода); EpisodeManager открывает эпизод сразу.
-    # Нужно сценариям с гистерезисом, где «кандидат» не равен «есть hit».
-    confirms_itself: ClassVar[bool] = False
+    # True — правило без зоны создаётся само для каждого источника (ensure_default_rules).
+    auto_enable: ClassVar[bool] = False
+    # True — правилу нужен анализ сцены (модель фона) по его зонам: Pipeline включит SceneAnalyzer.
+    requires_scene_analysis: ClassVar[bool] = False
 
     def __init__(self, rule_id: str) -> None:
         self.rule_id = rule_id
 
-    def finished(self) -> list[tuple[int, str | None]]:
-        """Необязательно: (track_id, zone_id) нарушений, закончившихся на последнем кадре по логике
-        сценария (например, человек замедлился). EpisodeManager завершит их эпизоды сразу, не
-        дожидаясь gap_tolerance_s."""
-        return []
-
     @abstractmethod
     def update(
-        self,
-        tracks: Sequence[Track],
-        zones: Sequence[ZoneGeometry],
-        params: BaseScenarioParams,
-        video_ts: float,
+        self, context: FrameContext, zones: Sequence[ZoneGeometry], params: BaseScenarioParams
     ) -> list[RuleHit]:
-        """zones — зона правила, либо все зоны источника, если у правила zone_id = null.
-        tracks — только подтверждённые (state=confirmed) треки этого кадра."""
+        """Сигналы ЭТОГО кадра. zones — зона правила; правило без зоны: все зоны источника, если
+        сценарию зона обязательна, иначе пустой список (весь кадр)."""
 
-    def track_info(self) -> dict[int, dict[str, Any]]:
-        """Необязательно: что сценарий знает о треках на последнем кадре (для живого просмотра),
-        например {track_id: {"speed": 1.2, "candidate": True}}."""
+    def describe(
+        self, context: FrameContext, zones: Sequence[ZoneGeometry], params: BaseScenarioParams
+    ) -> dict[int, dict[str, Any]]:
+        """Необязательно: сведения о треках этого кадра для живого просмотра, например
+        {track_id: {"speed": 1.2}}. Тоже без состояния."""
         return {}

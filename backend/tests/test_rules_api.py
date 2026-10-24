@@ -50,6 +50,7 @@ def test_scenarios_list(client):
         "min_confidence": 0.4,
         "confirm_window_s": 1.0,
         "gap_tolerance_s": 2.0,
+        "end_window_s": 2.0,  # по умолчанию = gap_tolerance_s: поведение danger_zone прежнее
         "labels": ["person"],
     }
     props = dz["params_schema"]["properties"]
@@ -82,6 +83,7 @@ def test_rule_create_fills_defaults(client, setup):
         "min_confidence": 0.4,
         "confirm_window_s": 2.0,
         "gap_tolerance_s": 2.0,
+        "end_window_s": 2.0,
         "labels": ["person"],
     }
     assert rule["version"] == 1 and rule["enabled"] is True and rule["priority"] == "high"

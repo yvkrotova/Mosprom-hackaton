@@ -27,7 +27,7 @@ from app.pipeline.sources import FrameSourceError, NullFrameSource, VideoFileSou
 from app.pipeline.tracker import IoUTracker
 from tests.fixtures.make_detections_sample import SAMPLE_PATH, SAMPLE_SIZE, SAMPLE_ZONE
 from tests.fixtures.make_sample_video import make_sample_video
-from tests.helpers import RecordingSink, make_config, summary
+from tests.helpers import RecordingSink, make_config, make_context, summary
 
 FPS = 10.0
 
@@ -293,10 +293,13 @@ def test_danger_zone_uses_feet_point():
     def track(bbox, label="person", conf=0.9):
         return Track(1, label, bbox, conf, 0.0, 0.0)
 
-    assert rule.update([track((0.4, 0.3, 0.5, 0.8))], [zone], params, 0.0)  # ноги в зоне
-    assert not rule.update([track((0.4, 0.1, 0.5, 0.55))], [zone], params, 0.0)  # ноги выше
-    assert not rule.update([track((0.4, 0.3, 0.5, 0.8), "forklift")], [zone], params, 0.0)
-    assert not rule.update([track((0.4, 0.3, 0.5, 0.8), conf=0.3)], [zone], params, 0.0)
+    def check(t):
+        return rule.update(make_context([t]), [zone], params)
+
+    assert check(track((0.4, 0.3, 0.5, 0.8)))  # ноги в зоне
+    assert not check(track((0.4, 0.1, 0.5, 0.55)))  # ноги выше
+    assert not check(track((0.4, 0.3, 0.5, 0.8), "forklift"))
+    assert not check(track((0.4, 0.3, 0.5, 0.8), conf=0.3))
 
 
 def test_annotate_without_image_keeps_size():

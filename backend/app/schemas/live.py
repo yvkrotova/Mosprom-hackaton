@@ -29,6 +29,19 @@ class LiveTrack(BaseModel):
     scenario_types: list[str] = Field(default_factory=list)
 
 
+class ZoneState(BaseModel):
+    """Состояние пары (зона, сценарий) на кадре — одинаково для всех сценариев."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    zone_id: str
+    scenario_type: str
+    # clear — чисто; candidate — нарушение есть, ждём подтверждения; violation — идёт эпизод;
+    # unknown — правило не может оценить зону (reason — почему: «сцена не готова», «смена света»…).
+    state: Literal["clear", "candidate", "violation", "unknown"]
+    reason: str | None = None
+
+
 class LiveFrameMeta(InputModel):
     frame_idx: int = Field(ge=0)
     video_ts: float = Field(ge=0)
@@ -38,3 +51,4 @@ class LiveFrameMeta(InputModel):
     inference_ms: float | None = None
     detector_kind: str | None = None
     tracks: list[LiveTrack] = Field(default_factory=list)
+    zone_states: list[ZoneState] = Field(default_factory=list)

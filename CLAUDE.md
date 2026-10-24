@@ -51,6 +51,15 @@ Windows: PowerShell 5.1 портит JSON-аргументы и кириллиц
 - Новый эндпоинт/поле → тест + CONTRACT.md; изменение моделей БД → миграция (последняя 0003 `events.details`).
 - Фронт — без React/сборщика (решение: продолжать существующий код).
 
+## Рефакторинг сценариев (промпт «A/B/C»: правила без состояния, автобег, blocked_exit)
+Этап 0 — готово: эталон `backend/docs/baseline_before_refactor.json`.
+Этап A — готово: FrameContext, HitLevel (VIOLATION/HOLD/UNKNOWN), единая машина эпизодов в
+EpisodeManager (end_window_s в BaseScenarioParams), track_id=None для зонных эпизодов, zone_states в
+live.frame, kinematics.py, бег без состояния, shapes в annotate.py. Регрессия: danger_zone — без
+изменений; бег — те же эпизоды, концы на 0.1–0.2 с раньше (нет хвоста EMA).
+Дальше: этап B (ensure_default_rules, AUTO_START_ON_UPLOAD, перезапуск при изменении правил, выбор
+сценариев для зоны), этап C (scene.py, blocked_exit, эталон зоны), D (фронт), E (контракт).
+
 ## Статус (2026-10-24)
 Готово: ByteTrack, `run_fast_movement` (порог 1.5, подтверждён частично), живые треки во фронте, проверка
 на 4 роликах (docs/BENCHMARKS.md: зона 2/3, бег 4/4, 0 FP, 1.0 тревоги на эпизод), подготовка к LinQ без SDK.
