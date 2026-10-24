@@ -167,3 +167,18 @@ def test_deleting_zone_deletes_its_rules(client, setup):
     assert client.delete(f"/api/v1/zones/{setup['zone']}").status_code == 204
     assert client.get("/api/v1/rules").json() == []
     assert client.delete(f"/api/v1/rules/{rule['id']}").status_code == 404
+
+
+def test_scenarios_describe_ui_without_frontend_lists(client):
+    """Фронт берёт из GET /scenarios подписи, иконки, поля details и выбор по умолчанию."""
+    by_type = {s["scenario_type"]: s for s in client.get("/api/v1/scenarios").json()}
+    assert {t: s["icon"] for t, s in by_type.items()} == {
+        "blocked_exit": "blocked",
+        "danger_zone": "siren",
+        "run_fast_movement": "run",
+    }
+    assert [t for t, s in by_type.items() if s["zone_default"]] == ["danger_zone"]
+    assert [t for t, s in by_type.items() if s["requires_scene_analysis"]] == ["blocked_exit"]
+    fields = by_type["blocked_exit"]["details_fields"]
+    assert [f["key"] for f in fields] == ["blocked_pct", "obstacles"]
+    assert by_type["run_fast_movement"]["details_fields"][0]["unit"] == "роста/с"

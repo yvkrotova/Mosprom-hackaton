@@ -8,7 +8,7 @@ import { sound } from "./sound.js";
 import { drawTrack, drawZone, Stage, trackColor, zoneColor } from "./stage.js";
 import { currentSource, emit, on, patchSource, selectSource, state } from "./state.js";
 import {
-  $, $$, canDo, episodeSeconds, esc, fmtDuration, fmtNum, fmtSpeed, fmtTime, isLinq, label, SCENARIO_ICONS, stored, store, toastError,
+  $, $$, canDo, episodeSeconds, esc, fmtDuration, fmtNum, fmtSpeed, detailsShort, fmtTime, isLinq, label, scenarioIcon, scenarioInfo, stored, store, toastError,
 } from "./util.js";
 
 const TRAIL_LEN = 30;
@@ -181,6 +181,19 @@ function onLiveMessage(msg) {
   }
 }
 
+// Вид зоны по zone_states кадра (одинаково для всех сценариев): нарушение важнее кандидата,
+// кандидат важнее «оценить нельзя». Люди в зоне без зонного сигнала — просто «в зоне».
+function zoneView(zone, tracks, zoneStates) {
+  const mine = zoneStates.filter((s) => s.zone_id === zone.id);
+  const has = (st) => mine.find((s) => s.state === st);
+  if (has("violation") || tracks.some((t) => t.zone_ids.includes(zone.id) && t.state === "alert")) return { state: "alert" };
+  if (has("candidate")) return { state: "candidate" };
+  if (tracks.some((t) => t.zone_ids.includes(zone.id))) return { state: "in_zone" };
+  const unknown = has("unknown");
+  if (unknown) return { state: "unknown", reason: unknown.reason };
+  return { state: "normal" };
+}
+
 function lerpBox({ from, to, t0 }, now) {
   const k = Math.min(1, (now - t0) / INTERP_MS);
   return to.map((v, i) => from[i] + (v - from[i]) * k);
@@ -220,10 +233,10 @@ function loop(now) {
   const pulse = (Math.sin(now / 180) + 1) / 2;
 
   if (toggles.zones) {
+    const zoneStates = fresh ? frame.zone_states || [] : [];
     zones.forEach((z, i) => {
-      const inZone = tracks.filter((t) => t.zone_ids.includes(z.id));
-      const zstate = inZone.some((t) => t.state === "alert") ? "alert" : inZone.length ? "in_zone" : "normal";
-      drawZone(stage, z, zoneColor(i), { state: zstate, pulse });
+      const { state: zstate, reason } = zoneView(z, tracks, zoneStates);
+      drawZone(stage, z, zoneColor(i), { state: zstate, pulse, reason });
     });
   }
   if (toggles.boxes) {
@@ -304,14 +317,13 @@ function zoneNames(tracks) {
   return zones.filter((z) => ids.has(z.id)).map((z) => `«${z.name}»`).join(", ");
 }
 
-// «в зоне «Пресс»», «бег / резкое перемещение» или оба.
+// «в зоне «Пресс»», названия сценариев на весь кадр («бег / резкое перемещение») или оба.
 function whereText(tracks) {
   const parts = [];
   const zones = zoneNames(tracks);
   if (zones) parts.push(`в зоне ${zones}`);
-  const fast = tracks.some((t) => (t.scenario_types || []).includes("run_fast_movement")
-    || ((t.flags || []).includes("candidate") && !(t.flags || []).includes("in_zone")));
-  if (fast) parts.push("бег / резкое перемещение");
+  const frame = new Set(tracks.flatMap((t) => t.scenario_types || []).filter((s) => scenarioInfo(s)?.requires_zone === false));
+  for (const s of frame) parts.push(label("scenario", s).toLowerCase());
   return parts.join(" · ") || "нарушение";
 }
 
@@ -471,10 +483,10 @@ function renderFeed() {
     return `<div class="inc ${hot ? "hot" : "done"} ${crit ? "crit" : ""}" data-ev="${ev.id}">
       ${ev.thumbnail_url ? `<img class="inc-thumb" src="${esc(mediaUrl(ev.thumbnail_url))}" alt="" loading="lazy" />` : `<div class="inc-thumb ph">${icon("film")}</div>`}
       <div class="inc-body">
-        <div class="inc-top"><span class="inc-title">${icon(SCENARIO_ICONS[ev.scenario_type] || "alert-triangle")}${crit ? "⚠ " : ""}${esc(label("scenario", ev.scenario_type))}</span><span class="inc-time">${fmtTime(ev.started_at)}</span></div>
+        <div class="inc-top"><span class="inc-title">${icon(scenarioIcon(ev.scenario_type))}${crit ? "⚠ " : ""}${esc(label("scenario", ev.scenario_type))}</span><span class="inc-time">${fmtTime(ev.started_at)}</span></div>
         <div class="inc-where">${esc(ev.source_name || "—")} • ${esc(ev.zone_name || "без зоны")}</div>
         <div class="inc-meta">${stateBadge(ev)}${reviewBadge(ev.review_status)}${priorityBadge(ev.priority)}
-          ${dur}<span>· ${Math.round(ev.confidence * 100)}%</span>${ev.details?.speed_max != null ? `<span title="ростов человека в секунду, не м/с">· макс ${fmtSpeed(ev.details.speed_max)}</span>` : ""}</div>
+          ${dur}<span>· ${Math.round(ev.confidence * 100)}%</span>${detailsShort(ev) ? `<span>· ${esc(detailsShort(ev))}</span>` : ""}</div>
       </div>
       ${hot ? `<div class="inc-actions">
         <button class="btn btn-sm btn-success" data-act="confirm">${icon("check")}Подтвердить</button>

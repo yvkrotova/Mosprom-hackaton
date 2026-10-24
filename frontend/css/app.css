@@ -517,3 +517,8 @@ table.table { width: 100%; border-collapse: collapse; font-size: 13px; }
   .print-only { display: block !important; }
 }
 .print-only { display: none; }
+
+/* Редактор зон: выбор сценариев зоны и эталон «пустого прохода» */
+.scenario-pick { font-weight: 500; }
+.scenario-pick > span { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.ref-thumb { width: 100%; max-height: 140px; object-fit: contain; border-radius: 6px; border: 1px solid var(--border, #1f2937); margin-bottom: 6px; background: #000; }

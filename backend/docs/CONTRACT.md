@@ -518,3 +518,28 @@ curl "http://localhost:8000/api/v1/events?scenario_type=danger_zone&source_id=0b
 - `image` — JPEG до 960 пикселей по ширине; `null`, если источник без картинки (replay без видео).
 
 `GET /api/v1/sources/{id}/live.jpg` → последний живой кадр или `404 LIVE_NOT_AVAILABLE`.
+
+## Изменения рефакторинга сценариев (этапы A–E, 2026-10-24)
+
+- **Зоны:** `ZoneCreate/ZoneUpdate.scenario_types` — какие зонные сценарии включены (при создании без поля —
+  сценарии с `zone_default`, сейчас `danger_zone`; снятая галочка удаляет правило зоны; сценарий на весь кадр —
+  `422 SCENARIO_NOT_ZONAL`). `ZoneOut.scenario_types`, `ZoneOut.reference_url`.
+  `POST /zones/{id}/reference` — текущий кадр источника сохраняется как эталон «пустой зоны»;
+  `DELETE /zones/{id}/reference` — сброс (эталон соберётся автоматически за `SCENE_BOOTSTRAP_S`).
+- **Правила по умолчанию:** сценарии с `auto_enable` (бег) получают правило на весь кадр при создании/загрузке
+  источника и при запуске (`Rule.auto_created = true`, один раз на источник — `sources.defaults_applied`).
+  `AUTO_START_ON_UPLOAD=true` — загрузка видео сразу запускает анализ.
+- **Горячая перезагрузка:** запущенный воркер раз в `CONFIG_RELOAD_S` перечитывает зоны/правила и применяет
+  их без перезапуска (видео не начинается заново).
+- **`GET /scenarios`:** добавлены `icon`, `requires_scene_analysis`, `zone_default`,
+  `details_fields: [{key, title, unit}]`. Фронт не перечисляет сценарии сам — подписи, иконки, формы
+  и поля карточки события берутся отсюда.
+- **Event (единый контракт для всех сценариев):** `id`, `source_id`, `zone_id`, `scenario_type`, `track_id`
+  (**null** — нарушение зоны целиком, например предмет в проходе), `video_ts_start/detected/end` (всё по
+  времени видео), `state`, `details` (значения из `RuleHit.extra.details` и максимумы `<key>_max`), доказательства.
+- **Правила (внутренний контракт):** `rule.update(FrameContext, zones, params) -> list[RuleHit]` без состояния;
+  `HitLevel`: VIOLATION (нарушение), HOLD (продолжает идущий эпизод), UNKNOWN (оценить нельзя — эпизод не
+  открывается, идущий завершается после `gap_tolerance_s`). Всю логику эпизодов ведёт `EpisodeManager`.
+- **`/ws/live/{id}` кадр:** `zone_states: [{zone_id, scenario_type, state: clear|candidate|violation|unknown,
+  reason}]`; у трека флаг `trail` (правило просит рисовать след).
+- **Метрики:** `scene_ms_avg` — анализ сцены, мс на обновление (null — не нужен).

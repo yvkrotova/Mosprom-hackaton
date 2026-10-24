@@ -95,6 +95,8 @@ class RunFastMovementRule(ScenarioRule):
     scenario_type = ScenarioType.RUN_FAST_MOVEMENT
     ParamsModel = RunFastParams
     title = "Бег / резкое перемещение"
+    icon = "run"
+    details_fields = {"speed": ("Скорость", "роста/с")}
     description = (
         "Тревога, если человек перемещается быстрее порога в «ростах человека в секунду» "
         "(не м/с, камера неподвижна). С зоной — только внутри зоны, без зоны — весь кадр"

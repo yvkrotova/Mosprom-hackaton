@@ -31,6 +31,7 @@ class DangerZoneRule(ScenarioRule):
     scenario_type = ScenarioType.DANGER_ZONE
     ParamsModel = DangerZoneParams
     title = "Человек в опасной зоне"
+    icon = "siren"
     description = "Тревога, если ноги человека (центр нижней кромки рамки) внутри полигона зоны"
     requires_zone = True
 

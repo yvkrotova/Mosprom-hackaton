@@ -27,10 +27,13 @@ def frame_meta(
     """Снимок треков кадра. Только подтверждённые и недавно потерянные (tentative — шум)."""
     zones_by_track: dict[int, list[str]] = {}
     scenarios_by_track: dict[int, set[str]] = {}
+    trail_tracks: set[int] = set()  # правило просит рисовать хвост траектории (extra.trail)
     for hit in result.hits:
         if hit.track_id is None or hit.level == HitLevel.UNKNOWN:
             continue  # зонные сигналы — в zone_states; «оценить нельзя» — не нарушение
         scenarios_by_track.setdefault(hit.track_id, set()).add(str(hit.scenario_type))
+        if (hit.extra or {}).get("trail"):
+            trail_tracks.add(hit.track_id)
         if hit.zone_id and hit.zone_id not in zones_by_track.setdefault(hit.track_id, []):
             zones_by_track[hit.track_id].append(hit.zone_id)
     tracks = []
@@ -47,6 +50,8 @@ def frame_meta(
             flags.append("candidate")
         if alerting:
             flags.append("violation")
+        if t.track_id in trail_tracks:
+            flags.append("trail")
         if alerting:
             state = "alert"
         elif t.track_id in zones_by_track or "candidate" in flags:

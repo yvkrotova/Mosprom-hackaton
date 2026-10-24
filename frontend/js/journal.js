@@ -4,7 +4,7 @@ import { mediaUrl } from "./config.js";
 import { openEvent, priorityBadge, reviewBadge, stateBadge } from "./event-modal.js";
 import { hydrateIcons, icon } from "./icons.js";
 import { on, state } from "./state.js";
-import { $, $$, episodeSeconds, esc, fmtDateTime, fmtDuration, fmtSpeed, LABELS, label, toast, toastError } from "./util.js";
+import { $, $$, episodeSeconds, esc, fmtDateTime, fmtDuration, detailsShort, label, toast, toastError } from "./util.js";
 
 const PAGE = 25;
 const FILTERS = ["scenario_type", "source_id", "zone_id", "from", "to", "state", "review_status", "priority"];
@@ -66,8 +66,7 @@ export function initJournal(root) {
         <div class="seg" id="jr-quick">${Object.entries(QUICK).map(([k, v]) => `<button data-quick="${k}">${v}</button>`).join("")}</div>
       </div>
       <div class="filters">
-        <label class="field"><span>Тип нарушения</span><select class="select" data-f="scenario_type"><option value="">Все типы</option>
-          ${Object.keys(LABELS.scenario).map((k) => `<option value="${k}">${label("scenario", k)}</option>`).join("")}</select></label>
+        <label class="field"><span>Тип нарушения</span><select class="select" data-f="scenario_type"></select></label>
         <label class="field"><span>Камера</span><select class="select" data-f="source_id"></select></label>
         <label class="field"><span>Зона</span><select class="select" data-f="zone_id"></select></label>
         <label class="field"><span>С (местное время)</span><input class="input" type="datetime-local" data-f="from" /></label>
@@ -109,6 +108,7 @@ export function initJournal(root) {
   $("#jr-csv").onclick = exportCsv;
 
   on("sources", renderSelects);
+  on("loaded", renderSelects);
   on("zones", renderSelects);
   on("event", () => jr.visible && scheduleReload());
 }
@@ -133,6 +133,9 @@ function setQuick(kind) {
 function renderSelects() {
   const src = $('[data-f="source_id"]');
   if (!src) return;
+  const scen = $('[data-f="scenario_type"]'); // типы — из GET /scenarios
+  scen.innerHTML = `<option value="">Все типы</option>` + state.scenarios.map((s) => `<option value="${s.scenario_type}">${esc(s.title)}</option>`).join("");
+  scen.value = jr.filters.scenario_type;
   src.innerHTML = `<option value="">Все камеры</option>` + state.sources.map((s) => `<option value="${s.id}">${esc(s.name)}</option>`).join("");
   src.value = jr.filters.source_id;
   const zones = jr.filters.source_id ? state.zones[jr.filters.source_id] || [] : Object.values(state.zones).flat();
@@ -144,7 +147,7 @@ function renderSelects() {
 function renderControls() {
   renderSelects();
   for (const el of $$("[data-f]")) {
-    if (el.dataset.f === "source_id" || el.dataset.f === "zone_id") continue;
+    if (["source_id", "zone_id", "scenario_type"].includes(el.dataset.f)) continue;
     el.value = el.type === "datetime-local" ? toLocalInput(jr.filters[el.dataset.f]) : jr.filters[el.dataset.f];
   }
   for (const btn of $$("[data-quick]")) btn.classList.remove("active");
@@ -189,7 +192,7 @@ async function load() {
         <td>${e.thumbnail_url ? `<img src="${esc(mediaUrl(e.thumbnail_url))}" alt="" loading="lazy" />` : icon("film")}</td>
         <td class="mono">${fmtDateTime(e.started_at)}</td>
         <td>${esc(e.source_name || "камера удалена")}<div class="sub">${esc(e.zone_name || "без зоны")}</div></td>
-        <td>${esc(label("scenario", e.scenario_type))}<div class="sub">${priorityBadge(e.priority)}${e.details?.speed_max != null ? ` макс ${fmtSpeed(e.details.speed_max)}` : ""}</div></td>
+        <td>${esc(label("scenario", e.scenario_type))}<div class="sub">${priorityBadge(e.priority)}${detailsShort(e) ? ` ${esc(detailsShort(e))}` : ""}</div></td>
         <td class="mono">${e.state === "active" ? "идёт" : fmtDuration(episodeSeconds(e))}</td>
         <td class="mono">${Math.round(e.confidence * 100)}%</td>
         <td>${stateBadge(e)}</td>

@@ -11,7 +11,7 @@ import {
   currentSource, emit, loadZonesAndRules, on, patchSource, refreshSources, selectSource, setOperator, setServerOnline, state,
 } from "./state.js";
 import { initTerritory, setTerritoryVisible } from "./territory.js";
-import { $, $$, esc, fmtNum, isLinq, label, openModal, promptModal, store, toast, toastError } from "./util.js";
+import { $, $$, esc, fmtNum, isLinq, label, openModal, promptModal, setScenarios, store, toast, toastError } from "./util.js";
 
 const TABS = { live: setLiveVisible, journal: setJournalVisible, territory: setTerritoryVisible, analytics: setAnalyticsVisible };
 let activeTab = "live";
@@ -233,9 +233,15 @@ function openUpload() {
       const src = await api.uploadSource(form, (p) => ($(".progress div", root).style.width = `${Math.round(p * 100)}%`));
       close();
       await refreshSources();
+      await loadZonesAndRules(src.id); // правила по умолчанию (например, бег) backend создал сам
       selectSource(src.id);
-      showTab("territory");
-      toast(`Камера «${src.name}» добавлена. Обведите опасную зону на кадре.`, "success", { timeout: 6000 });
+      // Анализ запускается сам (AUTO_START_ON_UPLOAD): сразу показываем живой просмотр.
+      const running = src.status === "running";
+      showTab(running ? "live" : "territory");
+      const auto = (state.rules[src.id] || []).filter((r) => r.auto_created).map((r) => `«${label("scenario", r.scenario_type)}»`);
+      toast(`Камера «${src.name}» добавлена${running ? ", анализ запущен" : ""}.`
+        + (auto.length ? ` По умолчанию включено: ${auto.join(", ")}.` : "")
+        + " Зоны можно добавить на вкладке «Территория».", "success", { timeout: 7000 });
     } catch (err) {
       toastError(err);
       $("[data-ok]", root).disabled = false;
@@ -251,6 +257,7 @@ let bootstrapped = false;
 async function bootstrap() {
   try {
     [state.scenarios] = await Promise.all([api.scenarios(), refreshSources()]);
+    setScenarios(state.scenarios);
     await Promise.all(state.sources.map((s) => loadZonesAndRules(s.id)));
     bootstrapped = true;
     state.loaded = true;

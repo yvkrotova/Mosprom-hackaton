@@ -217,6 +217,10 @@ class ScenarioRule(ABC):
     ParamsModel: ClassVar[type[BaseScenarioParams]]
     title: ClassVar[str]
     description: ClassVar[str]
+    icon: ClassVar[str] = "alert-triangle"  # имя иконки во фронте (frontend/js/icons.js)
+    # Поля RuleHit.extra["details"] для карточки события: ключ -> (подпись, единица). Фронт
+    # показывает их одинаково для всех сценариев (значение и максимум за эпизод, ключ_max).
+    details_fields: ClassVar[dict[str, tuple[str, str]]] = {}
     requires_zone: ClassVar[bool] = True
     # True — правило без зоны создаётся само для каждого источника (ensure_default_rules).
     auto_enable: ClassVar[bool] = False

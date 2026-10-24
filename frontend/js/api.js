@@ -71,6 +71,8 @@ export const api = {
   createZone: (sourceId, body) => request("POST", `/sources/${sourceId}/zones`, { json: body }),
   updateZone: (id, body) => request("PATCH", `/zones/${id}`, { json: body }),
   deleteZone: (id) => request("DELETE", `/zones/${id}`),
+  setZoneReference: (id) => request("POST", `/zones/${id}/reference`),
+  clearZoneReference: (id) => request("DELETE", `/zones/${id}/reference`),
 
   rules: (sourceId) => request("GET", "/rules", { query: { source_id: sourceId } }),
   createRule: (body) => request("POST", "/rules", { json: body }),

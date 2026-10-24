@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from pydantic import Field
+from pydantic import BaseModel, Field
 
 from app.schemas.common import ApiModel, InputModel, UtcDatetime, UuidStr
 from app.schemas.enums import Priority, ScenarioType
@@ -46,6 +46,12 @@ class RuleOut(ApiModel):
     updated_at: UtcDatetime
 
 
+class DetailField(BaseModel):
+    key: str = Field(description="Ключ в Event.details (максимум за эпизод — <key>_max)")
+    title: str
+    unit: str = ""
+
+
 class ScenarioInfo(ApiModel):
     scenario_type: ScenarioType
     title: str
@@ -53,6 +59,16 @@ class ScenarioInfo(ApiModel):
     requires_zone: bool
     auto_enable: bool = Field(
         False, description="Правило на весь кадр создаётся само для каждого источника"
+    )
+    requires_scene_analysis: bool = Field(
+        False, description="Нужен анализ сцены (эталон «пустой зоны» в редакторе зон)"
+    )
+    icon: str = Field("alert-triangle", description="Имя иконки во фронте")
+    details_fields: list[DetailField] = Field(
+        default_factory=list, description="Что показывать из details в карточке события"
+    )
+    zone_default: bool = Field(
+        False, description="Включается у новой зоны, если scenario_types не переданы"
     )
     params_schema: dict[str, Any] = Field(description="JSON Schema параметров")
     defaults: dict[str, Any]

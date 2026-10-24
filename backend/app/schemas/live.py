@@ -25,7 +25,7 @@ class LiveTrack(BaseModel):
     # Состояние трека у трекера: confirmed — виден; lost — пропал, рамка — прогноз (полупрозрачно).
     track_state: Literal["confirmed", "lost"] = "confirmed"
     speed: float | None = Field(None, description="Скорость, «ростов в секунду» (если считается)")
-    flags: list[Literal["in_zone", "candidate", "violation"]] = Field(default_factory=list)
+    flags: list[Literal["in_zone", "candidate", "violation", "trail"]] = Field(default_factory=list)
     scenario_types: list[str] = Field(default_factory=list)
 
 

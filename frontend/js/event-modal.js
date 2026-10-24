@@ -5,7 +5,7 @@ import { mediaUrl } from "./config.js";
 import { icon } from "./icons.js";
 import { emit, on, setOperator, state } from "./state.js";
 import {
-  $, $$, canDo, episodeSeconds, esc, fmtDateTime, fmtDuration, fmtNum, fmtSpeed, label, openModal, toast, toastError,
+  $, $$, canDo, episodeSeconds, esc, fmtDateTime, fmtDuration, fmtNum, detailItems, label, openModal, violatorText, toast, toastError,
 } from "./util.js";
 
 export const reviewBadge = (status) => {
@@ -99,10 +99,8 @@ export async function openEvent(eventId) {
             <dt>Окончание</dt><dd class="mono">${ev.ended_at ? fmtDateTime(ev.ended_at) : `<span class="badge badge-red">● идёт</span>`}</dd>
             <dt>Длительность</dt><dd class="mono">${duration}</dd>
             <dt>На видео</dt><dd class="mono">${fmtNum(ev.video_ts_start, 1)}–${fmtNum(ev.video_ts_end, 1)} с</dd>
-            <dt>Уверенность</dt><dd class="mono">${Math.round(ev.confidence * 100)}% (макс. за эпизод) · трек #${ev.track_id ?? "—"}</dd>
-            ${ev.details?.speed_max != null ? `<dt>Скорость</dt><dd class="mono" title="Скорость в ростах человека в секунду (смещение ног / высота рамки). Не м/с.">
-              ${ev.state === "active" ? `сейчас ${fmtSpeed(ev.details.speed)} · ` : ""}макс ${fmtSpeed(ev.details.speed_max)}
-              <div class="faint" style="font-family:var(--sans);font-size:11px">роста человека в секунду, не м/с · ходьба ≈ 0,6–1, бег ≈ 2–3</div></dd>` : ""}
+            <dt>Уверенность</dt><dd class="mono">${Math.round(ev.confidence * 100)}% (макс. за эпизод) · ${violatorText(ev)}</dd>
+            ${detailItems(ev).map((d) => `<dt>${esc(d.title)}</dt><dd class="mono">${ev.state === "active" && d.now != null ? `сейчас ${esc(d.now)}` : ""}${ev.state === "active" && d.now != null && d.max != null ? " · " : ""}${d.max != null ? `макс ${esc(d.max)}` : ev.state === "active" ? "" : esc(d.now ?? "")}</dd>`).join("")}
             <dt>Подтверждено за</dt><dd class="mono">${fmtNum(ev.video_ts_detected - ev.video_ts_start, 2)} с видео · ${fmtNum(realDelay, 2)} с реально</dd>
             <dt>Оповещение</dt><dd class="mono">${notifyMs == null ? "—" : fmtNum(notifyMs, 0) + " мс после подтверждения"}</dd>
             <dt>Модель</dt><dd class="mono">${esc(ev.model_version)}</dd>

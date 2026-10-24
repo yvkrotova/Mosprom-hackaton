@@ -1,12 +1,12 @@
 // Вкладка «Территории и правила»: редактор полигонов зон поверх кадра камеры и параметры правил.
 import { api } from "./api.js";
+import { mediaUrl } from "./config.js";
 import { hydrateIcons, icon } from "./icons.js";
 import { drawZone, Stage, zoneColor } from "./stage.js";
 import { currentSource, loadZonesAndRules, on, patchSource, refreshSources, selectSource, state } from "./state.js";
-import { $, $$, confirmModal, esc, fmtNum, label, openModal, SCENARIO_ICONS, toast, toastError } from "./util.js";
+import { $, $$, confirmModal, esc, fmtNum, label, openModal, scenarioIcon, toast, toastError } from "./util.js";
 
 const HANDLE = 7; // радиус «ручки» вершины, px
-const PRIMARY = "danger_zone"; // новой зоне этот сценарий включается сразу
 // Ползунки удобнее с разумным потолком; схема backend допускает больше (до 60 с).
 const UI_LIMITS = { confirm_window_s: [0, 10, 0.5], gap_tolerance_s: [0, 10, 0.5], min_confidence: [0.1, 0.95, 0.05] };
 const PARAM_TITLES = {
@@ -105,7 +105,10 @@ const hasDirty = () => ed.zones.some((z) => z.dirty) || Object.values(ed.rules).
 function resetModel() {
   const zones = state.zones[state.sourceId] || [];
   const selectedId = ed.zones[ed.sel]?.id;
-  ed.zones = zones.map((z) => ({ id: z.id, name: z.name, polygon: z.polygon.map((p) => [...p]), dirty: false }));
+  ed.zones = zones.map((z) => ({
+    id: z.id, name: z.name, polygon: z.polygon.map((p) => [...p]), dirty: false,
+    reference_url: z.reference_url || null,
+  }));
   ed.sel = Math.max(0, ed.zones.findIndex((z) => z.id === selectedId));
   if (!ed.zones.length) ed.sel = -1;
   ed.mode = "edit";
@@ -118,22 +121,27 @@ function rulesOf(scenarioType) {
   return (state.rules[state.sourceId] || []).filter((r) => !scenarioType || r.scenario_type === scenarioType);
 }
 
-// Формы правил выбранной зоны — по одной на каждый сценарий из GET /scenarios.
+// Формы правил выбранной зоны — по одной на каждый зонный сценарий из GET /scenarios.
+// selected — сценарий выбран для зоны (уходит в scenario_types при сохранении зоны);
+// у новой зоны выбраны сценарии с zone_default.
+const zoneScenarios = () => state.scenarios.filter((s) => s.requires_zone);
+
 function loadRuleForm() {
   const zone = ed.zones[ed.sel];
   ed.rules = {};
   if (!zone) return;
-  for (const info of state.scenarios) {
+  for (const info of zoneScenarios()) {
     const existing = zone.id ? rulesOf(info.scenario_type).find((r) => r.zone_id === zone.id) : null;
-    const isNew = !existing && info.scenario_type === PRIMARY;
     ed.rules[info.scenario_type] = {
       info,
       id: existing?.id || null,
-      enabled: existing ? existing.enabled : isNew,
+      selected: zone.id ? Boolean(existing) : Boolean(info.zone_default),
+      enabled: existing ? existing.enabled : true,
       priority: existing?.priority || "high",
       params: structuredClone({ ...(info.defaults || {}), ...(existing?.params || {}) }),
       version: existing?.version,
-      dirty: isNew, // новой зоне основное правило создаётся при сохранении
+      autoCreated: existing?.auto_created || false,
+      dirty: false,
     };
   }
 }
@@ -390,9 +398,10 @@ function renderSourceBar() {
       <div class="muted" style="font-size:12px">Правила на весь кадр (без зоны):</div>
       ${frameScenarios().map((info) => {
         const rule = frameRule(info.scenario_type);
-        const badge = !rule ? `<span class="badge badge-gray">не задано</span>`
-          : rule.enabled ? `<span class="badge badge-green">вкл</span>` : `<span class="badge badge-gray">выкл</span>`;
-        return `<button class="zone-item" data-frame-rule="${info.scenario_type}">${icon(SCENARIO_ICONS[info.scenario_type] || "siren")}
+        const badge = (!rule ? `<span class="badge badge-gray">не задано</span>`
+          : rule.enabled ? `<span class="badge badge-green">вкл</span>` : `<span class="badge badge-gray">выкл</span>`)
+          + (rule?.auto_created ? ` <span class="badge badge-blue" title="Создано автоматически с параметрами по умолчанию">по умолчанию</span>` : "");
+        return `<button class="zone-item" data-frame-rule="${info.scenario_type}">${icon(scenarioIcon(info.scenario_type))}
           <span class="z-name">${esc(info.title)}</span>${badge}</button>`;
       }).join("")}</div>` : ""}`;
   $("#edit-source").onclick = () => editSource(src);
@@ -419,7 +428,7 @@ function openFrameRule(info) {
     version: existing?.version,
   };
   const { root, close } = openModal(`
-    <h3 class="modal-title">${icon(SCENARIO_ICONS[info.scenario_type] || "siren")} ${esc(info.title)} — весь кадр</h3>
+    <h3 class="modal-title">${icon(scenarioIcon(info.scenario_type))} ${esc(info.title)} — весь кадр</h3>
     <p class="muted" style="font-size:12px;margin-top:-6px">Правило действует на всём кадре камеры. Чтобы следить только в части кадра,
       включите этот сценарий в правилах конкретной зоны.</p>
     <div class="frame-rule-form">${ruleSection(r)}</div>
@@ -455,7 +464,7 @@ function openFrameRule(info) {
       await loadZonesAndRules(state.sourceId);
       close();
       renderSourceBar();
-      toast(`Правило «${info.title}» сохранено. Применится при следующем запуске анализа.`, "success", { timeout: 3500 });
+      toast(`Правило «${info.title}» сохранено. У запущенного анализа применится через пару секунд.`, "success", { timeout: 3500 });
     } catch (err) { toastError(err); }
   };
 }
@@ -518,7 +527,7 @@ function renderList() {
         const zoneRules = z.id ? rules.filter((r) => r.zone_id === z.id) : [];
         const enabled = zoneRules.filter((r) => r.enabled).length;
         const ruleBadge = !z.id ? `<span class="badge badge-amber">новая</span>`
-          : enabled ? `<span class="badge badge-green">контроль вкл${enabled > 1 ? ` · ${enabled}` : ""}</span>`
+          : enabled ? `<span class="badge badge-green" title="${esc(zoneRules.map((r) => label("scenario", r.scenario_type)).join(", "))}">${zoneRules.filter((r) => r.enabled).map((r) => icon(scenarioIcon(r.scenario_type))).join("")} вкл</span>`
           : zoneRules.length ? `<span class="badge badge-gray">выкл</span>`
           : `<span class="badge badge-gray">без правила</span>`;
         return `<div class="zone-item ${i === ed.sel ? "active" : ""}" data-zone="${i}">
@@ -526,9 +535,10 @@ function renderList() {
           <span class="z-name">${esc(z.name)}</span>${z.dirty ? `<span class="dirty-dot" title="Не сохранено"></span>` : ""}
           ${ruleBadge}</div>`;
       }).join("")
-    : `<div class="empty" style="padding:16px">${icon("pen")}<div>Зон нет — нарушения не ищутся</div>
+    : `<div class="empty" style="padding:16px">${icon("pen")}<div>Зон нет — работают только правила на весь кадр</div>
         <div class="faint">Нажмите «Новая зона» и кликами обведите опасный участок на кадре</div></div>`;
-  if (rules.some((r) => !r.zone_id)) {
+  // Правило зонного сценария без zone_id действует во всех зонах (правила на весь кадр — выше, отдельно).
+  if (rules.some((r) => !r.zone_id && state.scenarios.find((s) => s.scenario_type === r.scenario_type)?.requires_zone)) {
     list.insertAdjacentHTML("beforeend", `<div class="notice notice-info">${icon("info")}<span>Есть правило «на все зоны камеры» — оно действует в каждой зоне.</span></div>`);
   }
   for (const item of $$("[data-zone]", list)) item.onclick = () => selectZone(Number(item.dataset.zone));
@@ -555,9 +565,10 @@ function renderPanel() {
       <div class="field"><span>Название (видно в тревогах и журнале)</span><input class="input" id="zone-name" value="${esc(zone.name)}" maxlength="200" /></div>
       <div class="muted" style="font-size:12px">Вершин: <b class="mono">${zone.polygon.length}</b> · площадь кадра: <b class="mono">${(polyArea(zone.polygon) * 100).toFixed(1)}%</b></div>
     </div>
+    ${referenceSection(zone, forms)}
     ${forms.length ? forms.map(ruleSection).join("") : `<div class="panel-section"><div class="notice notice-warn">${icon("info")}<span>Сценарии не загружены — проверьте связь с сервером.</span></div></div>`}
     <div class="panel-section">
-      ${running ? `<div class="notice notice-warn">${icon("info")}<span>Анализ этой камеры запущен. Новые границы и параметры применятся после перезапуска.</span></div>` : ""}
+      ${running ? `<div class="notice notice-info">${icon("info")}<span>Анализ этой камеры запущен: сохранённые границы, сценарии и параметры применятся на лету, через пару секунд.</span></div>` : ""}
       <div style="display:flex;gap:8px">
         <button class="btn btn-primary" id="save-zone" style="flex:1" ${dirty ? "" : "disabled"}>${icon("save")}Сохранить</button>
         <button class="btn" id="revert-zone" ${dirty ? "" : "disabled"} title="Отменить изменения">${icon("undo")}</button>
@@ -571,6 +582,7 @@ function renderPanel() {
     const r = ed.rules[el.dataset.rule];
     const field = el.dataset.field;
     el.oninput = el.onchange = () => {
+      if (field === "selected") { r.selected = el.checked; zone.dirty = true; renderPanel(); return; }
       if (field === "enabled") r.enabled = el.checked;
       else if (field === "priority") r.priority = el.value;
       else r.params[field] = readParam(el, r.info.params_schema.properties[field]);
@@ -580,11 +592,51 @@ function renderPanel() {
       markDirty();
     };
   }
+  const refSave = $("#ref-save"), refClear = $("#ref-clear");
+  if (refSave) refSave.onclick = () => saveReference(zone);
+  if (refClear) refClear.onclick = () => clearReference(zone);
   $("#save-zone").onclick = save;
   $("#revert-zone").onclick = () => { resetModel(); toast("Изменения отменены", "info", { timeout: 2000 }); };
   $("#delete-zone").onclick = removeZone;
   const restart = $("#restart-analysis");
   if (restart) restart.onclick = restartAnalysis;
+}
+
+// --- Эталон «пустой зоны» (сценарии с анализом сцены, например «Заблокированный проход») ----
+
+function referenceSection(zone, forms) {
+  if (!forms.some((r) => r.selected && r.info.requires_scene_analysis)) return "";
+  const saved = zone.reference_url;
+  const body = !zone.id
+    ? `<div class="muted" style="font-size:12px">Сохраните зону, затем запомните кадр, где проход пуст.</div>`
+    : `${saved ? `<img class="ref-thumb" src="${esc(mediaUrl(saved))}?t=${Date.now()}" alt="Эталон зоны" />` : ""}
+      <div class="muted" style="font-size:12px">${saved
+        ? "Эталон сохранён: предметы ищутся сравнением с этим кадром."
+        : "Эталона нет: он соберётся сам по первым секундам анализа. Предмет, лежащий с самого начала, так не найдётся — лучше запомнить пустой проход."}</div>
+      <div style="display:flex;gap:8px;margin-top:6px">
+        <button class="btn btn-sm" id="ref-save">${icon("save")}Запомнить пустой проход</button>
+        ${saved ? `<button class="btn btn-sm btn-ghost" id="ref-clear">${icon("x")}Сбросить</button>` : ""}
+      </div>`;
+  const badge = saved ? `<span class="badge badge-green">есть</span>` : `<span class="badge badge-gray">нет</span>`;
+  return `<div class="panel-section"><h4>Эталон пустой зоны ${badge}</h4>${body}</div>`;
+}
+
+async function saveReference(zone) {
+  try {
+    await api.setZoneReference(zone.id);
+    await loadZonesAndRules(state.sourceId);
+    resetModel();
+    toast("Текущий кадр камеры сохранён как пустой проход", "success", { timeout: 3000 });
+  } catch (err) { toastError(err); }
+}
+
+async function clearReference(zone) {
+  try {
+    await api.clearZoneReference(zone.id);
+    await loadZonesAndRules(state.sourceId);
+    resetModel();
+    toast("Эталон сброшен — соберётся автоматически", "info", { timeout: 3000 });
+  } catch (err) { toastError(err); }
 }
 
 // --- Форма правила по JSON Schema из GET /scenarios ---------------------------------------
@@ -593,10 +645,19 @@ function ruleSection(r) {
   const type = r.info.scenario_type;
   const props = r.info.params_schema?.properties || {};
   const attrs = (field) => `data-rule="${type}" data-field="${field}"`;
+  const zonal = "selected" in r; // в форме зоны сценарий сначала выбирают галочкой
+  const head = zonal
+    ? `<label class="switch-row scenario-pick"><span>${icon(scenarioIcon(type))} <b>${esc(r.info.title)}</b>
+        ${r.autoCreated ? `<span class="badge badge-blue">по умолчанию</span>` : ""}</span>
+        <input type="checkbox" ${attrs("selected")} ${r.selected ? "checked" : ""} /></label>`
+    : `<h4>Правило: ${esc(r.info.title)}</h4>`;
+  if (zonal && !r.selected) {
+    return `<div class="panel-section">${head}<div class="faint" style="font-size:12px">${esc(r.info.description || "")}</div></div>`;
+  }
   return `
     <div class="panel-section">
-      <h4>Правило: ${esc(r.info.title)}</h4>
-      <label class="rule-toggle"><span class="rt-text">${icon("siren")}<span><b>${r.enabled ? "Контроль включён" : "Контроль выключен"}</b><br>
+      ${head}
+      <label class="rule-toggle"><span class="rt-text">${icon(scenarioIcon(type))}<span><b>${r.enabled ? "Контроль включён" : "Контроль выключен"}</b><br>
         <span class="muted" style="font-size:12px">${esc(r.info.description || "тревога, звук и запись в журнал")}</span></span></span>
         <input type="checkbox" ${attrs("enabled")} ${r.enabled ? "checked" : ""} /></label>
       <div class="field"><span>Приоритет тревоги</span><select class="select" ${attrs("priority")}>
@@ -665,18 +726,21 @@ async function save() {
   $("#save-zone").disabled = true;
   const polygon = zone.polygon.map(([x, y]) => [round4(x), round4(y)]);
   try {
+    // Правила выбранных сценариев создаёт и удаляет backend по scenario_types (параметры по умолчанию).
+    const scenario_types = Object.values(ed.rules).filter((r) => r.selected).map((r) => r.info.scenario_type);
     if (!zone.id) {
-      const created = await api.createZone(sourceId, { name, polygon });
+      const created = await api.createZone(sourceId, { name, polygon, scenario_types });
       zone.id = created.id;
     } else if (zone.dirty) {
-      await api.updateZone(zone.id, { name, polygon });
+      await api.updateZone(zone.id, { name, polygon, scenario_types });
     }
     zone.dirty = false;
+    await loadZonesAndRules(sourceId);
+    // Изменённые параметры выбранных сценариев — в их правила (новые правила уже создал backend).
     for (const r of Object.values(ed.rules)) {
-      if (!r.dirty) continue;
-      const params = { ...r.params };
-      if (r.id) await api.updateRule(r.id, { enabled: r.enabled, priority: r.priority, params });
-      else await api.createRule({ source_id: sourceId, zone_id: zone.id, scenario_type: r.info.scenario_type, enabled: r.enabled, priority: r.priority, params });
+      if (!r.dirty || !r.selected) continue;
+      const rule = rulesOf(r.info.scenario_type).find((x) => x.zone_id === zone.id);
+      if (rule) await api.updateRule(rule.id, { enabled: r.enabled, priority: r.priority, params: { ...r.params } });
       r.dirty = false;
     }
     await loadZonesAndRules(sourceId);

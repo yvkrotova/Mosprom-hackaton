@@ -1,5 +1,6 @@
 // Холст «кадр + разметка»: вписывание кадра, координаты 0..1 <-> пиксели, отрисовка зон и людей.
 
+import { label, scenarioInfo } from "./util.js";
 export const ZONE_COLORS = ["#f59e0b", "#38bdf8", "#a78bfa", "#34d399", "#f472b6", "#fb7185"];
 export const zoneColor = (index) => ZONE_COLORS[index % ZONE_COLORS.length];
 
@@ -117,27 +118,31 @@ function chip(ctx, x, y, text, bg, { fg = "#fff", font = "600 11px ui-monospace,
   return w;
 }
 
-// state: "normal" | "in_zone" | "alert"; pulse 0..1 — для мигания тревоги.
-export function drawZone(stage, zone, color, { state = "normal", pulse = 0, label = true, dashed = false } = {}) {
+// state: "normal" | "in_zone" | "candidate" (мигает жёлтым) | "alert" (красная заливка)
+// | "unknown" (серый пунктир, reason — почему оценить нельзя); pulse 0..1 — для мигания.
+export function drawZone(stage, zone, color, { state = "normal", pulse = 0, label = true, dashed = false, reason = null } = {}) {
   const { ctx } = stage;
   if (!zone.polygon?.length) return;
   const pts = zone.polygon.map((p) => stage.px(p));
   ctx.beginPath();
   pts.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
   ctx.closePath();
-  const stroke = state === "alert" ? "#ef4444" : state === "in_zone" ? "#f59e0b" : color;
-  const fillA = state === "alert" ? 0.22 + 0.18 * pulse : state === "in_zone" ? 0.22 : 0.12;
+  const stroke = { alert: "#ef4444", in_zone: "#f59e0b", candidate: "#facc15", unknown: "#94a3b8" }[state] || color;
+  const fillA = state === "alert" ? 0.22 + 0.18 * pulse : state === "candidate" ? 0.08 + 0.22 * pulse
+    : state === "in_zone" ? 0.22 : state === "unknown" ? 0.06 : 0.12;
   ctx.fillStyle = hexA(stroke, fillA);
   ctx.fill();
-  ctx.setLineDash(dashed ? [8, 6] : []);
+  ctx.setLineDash(dashed || state === "unknown" ? [8, 6] : []);
   ctx.lineWidth = state === "normal" ? 2 : 3;
   ctx.strokeStyle = stroke;
   ctx.stroke();
   ctx.setLineDash([]);
   if (label) {
     const top = pts.reduce((a, b) => (b[1] < a[1] || (b[1] === a[1] && b[0] < a[0]) ? b : a));
-    const prefix = state === "alert" ? "⚠ " : "";
-    chip(ctx, top[0], top[1] - 4, prefix + zone.name, hexA(stroke, 0.85), { fg: state === "normal" ? "#0b0f17" : "#fff" });
+    const prefix = state === "alert" ? "⚠ " : state === "candidate" ? "? " : "";
+    const suffix = state === "unknown" && reason ? ` · ${reason}` : "";
+    const dark = state === "normal" || state === "candidate";
+    chip(ctx, top[0], top[1] - 4, prefix + zone.name + suffix, hexA(stroke, 0.85), { fg: dark ? "#0b0f17" : "#fff" });
   }
 }
 
@@ -181,10 +186,12 @@ export function drawTrack(stage, track, { skeleton = true, boxes = true, trail =
     ctx.lineWidth = 1;
     ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
     const flags = track.flags || [];
-    const running = (track.scenario_types || []).includes("run_fast_movement");
+    // Сценарий на весь кадр (бег и т. п.) — первое слово его названия из GET /scenarios.
+    const frameScenario = (track.scenario_types || []).find((st) => scenarioInfo(st)?.requires_zone === false);
+    const short = frameScenario ? label("scenario", frameScenario).split(/[\s/]/)[0].toUpperCase() : null;
     const tag = track.track_state === "lost" ? "потерян"
-      : track.state === "alert" ? (running ? "БЕГ" : "ТРЕВОГА")
-        : flags.includes("candidate") && !flags.includes("in_zone") ? "БЫСТРО?"
+      : track.state === "alert" ? (short || "ТРЕВОГА")
+        : flags.includes("candidate") && !flags.includes("in_zone") ? `${short || "ПРОВЕРКА"}?`
           : track.state === "in_zone" ? "В ЗОНЕ" : "Человек";
     const name = track.label === "person" ? tag : track.label;
     const speed = track.speed != null ? ` ${track.speed.toFixed(1)} р/с` : "";

@@ -24,6 +24,12 @@ def scenario_infos() -> list[ScenarioInfo]:
             description=cls.description,
             requires_zone=cls.requires_zone,
             auto_enable=cls.auto_enable,
+            requires_scene_analysis=cls.requires_scene_analysis,
+            icon=cls.icon,
+            details_fields=[
+                {"key": k, "title": t, "unit": u} for k, (t, u) in cls.details_fields.items()
+            ],
+            zone_default=str(cls.scenario_type) in ZONE_DEFAULT_SCENARIOS,
             params_schema=cls.ParamsModel.model_json_schema(),
             defaults=cls.ParamsModel().model_dump(mode="json"),
         )

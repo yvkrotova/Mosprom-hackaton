@@ -17,10 +17,7 @@ export function h(html) {
 // --- Подписи -------------------------------------------------------------------------------
 
 export const LABELS = {
-  scenario: {
-    danger_zone: "Человек в опасной зоне", run_fast_movement: "Бег / резкое перемещение",
-    fall_immobility: "Падение / неподвижность",
-  },
+  scenario: {}, // заполняется из GET /scenarios (setScenarios) — сценарии во фронте не перечисляются
   state: { active: "Идёт", ended: "Завершено" },
   review: { unreviewed: "Не проверено", confirmed: "Подтверждено", false_positive: "Ложное", escalated: "Передано мастеру" },
   priority: { low: "Низкий", medium: "Средний", high: "Высокий", critical: "Критический" },
@@ -38,11 +35,41 @@ export const label = (group, key) => LABELS[group]?.[key] ?? key ?? "—";
 // Инференс на ускорителе — detector_kind linq / linq_tpu / linq_tpu_replay (запись с TPU). Остальное — явно «не LinQ».
 export const isLinq = (kind) => typeof kind === "string" && kind.startsWith("linq");
 
-// Иконка типа нарушения.
-export const SCENARIO_ICONS = { danger_zone: "siren", run_fast_movement: "run", fall_immobility: "alert-triangle" };
+// Справочник сценариев из GET /scenarios: подписи, иконки, формы параметров.
+const SCENARIOS = new Map();
+export function setScenarios(list) {
+  SCENARIOS.clear();
+  for (const info of list || []) {
+    SCENARIOS.set(info.scenario_type, info);
+    LABELS.scenario[info.scenario_type] = info.title;
+  }
+}
+export const scenarioInfo = (type) => SCENARIOS.get(type) || null;
+// Иконка типа нарушения (из API; неизвестный сценарий — общий треугольник).
+export const scenarioIcon = (type) => SCENARIOS.get(type)?.icon || "alert-triangle";
 
-// Скорость сценария «бег»: «ростов человека в секунду», не м/с.
+// Скорость трека (track.speed): «ростов человека в секунду», не м/с.
 export const fmtSpeed = (v) => (v == null ? "—" : `${fmtNum(v, 1)} роста/с`);
+
+// Данные сценария из Event.details — по описанию details_fields из GET /scenarios (одинаково для
+// всех сценариев): [{ key, title, now, max }], now/max уже с единицей. Пустые поля пропускаются.
+export function detailItems(ev) {
+  const fields = SCENARIOS.get(ev.scenario_type)?.details_fields || [];
+  const fmt = (v, unit) => (typeof v === "number" ? fmtNum(v, Number.isInteger(v) ? 0 : 1) : String(v)) + (unit ? (unit === "%" ? "%" : ` ${unit}`) : "");
+  return fields
+    .filter((f) => ev.details?.[f.key] != null || ev.details?.[`${f.key}_max`] != null)
+    .map((f) => {
+      const now = ev.details[f.key], max = ev.details[`${f.key}_max`];
+      return { key: f.key, title: f.title, now: now != null ? fmt(now, f.unit) : null, max: max != null ? fmt(max, f.unit) : null };
+    });
+}
+
+// Коротко для строки журнала и ленты: «Скорость макс 2,4 роста/с · Предметов 1».
+export const detailsShort = (ev) =>
+  detailItems(ev).map((d) => `${d.title} ${d.max != null && d.max !== d.now ? "макс " + d.max : d.now ?? d.max}`).join(" · ");
+
+// Кто нарушил: трек человека или зона целиком (track_id = null — например, предмет в проходе).
+export const violatorText = (ev) => (ev.track_id == null ? "нарушение зоны" : `трек #${ev.track_id}`);
 
 // Та же таблица переходов, что в backend (docs/CONTRACT.md).
 export const TRANSITIONS = {
