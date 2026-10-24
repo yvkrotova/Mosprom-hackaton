@@ -9,7 +9,8 @@
 пересечение интервалов эпизода и разметки при одном scenario_type. Отдельно для каждого сценария:
 TP, FP, FN, precision, recall, оповещений на эпизод (event.created на найденный эпизод разметки,
 должно быть 1), задержка от start_s разметки до подтверждения (video_ts_detected).
-Детекции берутся из кэша data/videos/cache (см. tools/videos.py).
+Детекции берутся из кэша data/videos/cache (см. tools/videos.py); кадры декодируются,
+только когда есть сценарий с анализом сцены.
 """
 
 import argparse
@@ -30,11 +31,13 @@ from tools.videos import (  # noqa: E402
     CachedDetector,
     cached_detections,
     frames_of,
+    frames_with_images,
     select,
 )
 
 T_ISO = "2026-10-24T00:00:00Z"
 SCENARIOS = tuple(str(c.scenario_type) for c in list_scenarios())
+SCENE_SCENARIOS = {str(c.scenario_type) for c in list_scenarios() if c.requires_scene_analysis}
 
 
 class Sink:
@@ -147,6 +150,13 @@ def compare(found: list[dict], truth: list[dict], first_sends: list[str]) -> dic
     }
 
 
+def frames(entry: dict, records, cfg: SourceConfig, fps: float):
+    """Картинки декодируются, только если есть правило с анализом сцены (blocked_exit)."""
+    if any(r.scenario_type in SCENE_SCENARIOS for r in cfg.rules):
+        return frames_with_images(entry, fps)
+    return frames_of(records, cfg.source.id)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawTextHelpFormatter
@@ -173,7 +183,7 @@ def main() -> int:
         sink = Sink()
         Pipeline(
             cfg, CachedDetector(records), sink, tracker_config=TrackerConfig(kind=args.tracker)
-        ).run(frames_of(records, cfg.source.id))
+        ).run(frames(entry, records, cfg, args.fps))
         found_all = [{**p, "_event_id": eid} for eid, p in sink.final.items()]
         truth_all = all_labels.get(entry["id"], [])
         row = {"draft_labels": any(t.get("draft") for t in truth_all)}

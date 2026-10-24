@@ -62,8 +62,13 @@ live.frame, kinematics.py, бег без состояния, shapes в annotate.
 зон/правил — горячая перезагрузка в воркере (ConfigWatcher, CONFIG_RELOAD_S, Pipeline.apply_config);
 scenario_types у зоны (по умолчанию danger_zone). Дефолты бега: порог 1.7, confirm 0.6, min_track_age 0.3,
 край кадра — только верх/низ. Новый ролик coils в manifest.
-Дальше: этап C (scene.py, blocked_exit, эталон зоны), D (фронт, включая выбор сценариев зоны и
-автозапуск), E (контракт), документы.
+Этап C — готово (backend): `pipeline/scene.py` (SceneAnalyzer: один на поток, только зоны сценариев с
+requires_scene_analysis, ROI 320 px, 4 Гц, авто-эталон за SCENE_BOOTSTRAP_S или сохранённый «пустой проход»,
+быстрый фон, отсев «призраков», скачок яркости и сдвиг камеры → UNKNOWN), сценарий `blocked_exit`
+(confirm 10 с, ≥ 5 % зоны), POST/DELETE /zones/{id}/reference, scene_ms_avg в heartbeat/метриках
+(миграция 0005). Синтетика 11 тестов; реальные ролики: статичные камеры — 0 ложных, accident — FN из-за
+монтажа (честно «сдвиг камеры»). Замеры — docs/BENCHMARKS.md.
+Дальше: D (фронт: сценарии из API, zone_states, выбор сценариев зоны, эталон, автозапуск), E (контракт), документы.
 
 ## Статус (2026-10-24)
 Готово: ByteTrack, `run_fast_movement` (порог 1.5, подтверждён частично), живые треки во фронте, проверка

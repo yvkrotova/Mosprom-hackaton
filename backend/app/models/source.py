@@ -40,8 +40,14 @@ class Zone(IdMixin, TimestampMixin, Base):
     source_id: Mapped[str] = mapped_column(ForeignKey("sources.id", ondelete="CASCADE"), index=True)
     name: Mapped[str] = mapped_column(String(200))
     polygon: Mapped[list[list[float]]] = mapped_column(JSON)
+    # Эталон пустого прохода: кадр источника, сохранённый пользователем (путь от STORAGE_DIR).
+    reference_path: Mapped[str | None] = mapped_column(Text)
 
     source: Mapped[Source] = relationship(back_populates="zones")
+
+    @property
+    def reference_url(self) -> str | None:
+        return f"/media/{self.reference_path}" if self.reference_path else None
 
 
 class Rule(IdMixin, TimestampMixin, Base):

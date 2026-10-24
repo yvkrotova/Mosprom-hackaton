@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter, Response, status
 
-from app.api.deps import DbSession
+from app.api.deps import DbSession, SettingsDep
 from app.models import Zone
 from app.schemas.sources import ZoneCreate, ZoneOut, ZoneUpdate
 from app.services import rule_service, zone_service
@@ -42,6 +42,24 @@ def update_zone(zone_id: str, body: ZoneUpdate, db: DbSession) -> ZoneOut:
 
 
 @router.delete("/zones/{zone_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_zone(zone_id: str, db: DbSession) -> Response:
-    zone_service.delete_zone(db, zone_id)
+def delete_zone(zone_id: str, db: DbSession, settings: SettingsDep) -> Response:
+    zone_service.delete_zone(db, zone_id, settings)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post(
+    "/zones/{zone_id}/reference",
+    response_model=ZoneOut,
+    summary="Запомнить пустой проход: текущий кадр источника — эталон зоны для анализа сцены",
+)
+def set_reference(zone_id: str, db: DbSession, settings: SettingsDep) -> ZoneOut:
+    return _out(db, zone_service.set_reference(db, settings, zone_id))
+
+
+@router.delete(
+    "/zones/{zone_id}/reference",
+    response_model=ZoneOut,
+    summary="Забыть эталон: анализ сцены снова соберёт его по первым секундам видео",
+)
+def clear_reference(zone_id: str, db: DbSession, settings: SettingsDep) -> ZoneOut:
+    return _out(db, zone_service.clear_reference(db, settings, zone_id))

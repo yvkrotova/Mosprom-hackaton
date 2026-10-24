@@ -69,5 +69,8 @@ class ZoneOut(ApiModel):
     scenario_types: list[str] = Field(
         default_factory=list, description="Сценарии, для которых у зоны есть правило"
     )
+    reference_url: str | None = Field(
+        None, description="Эталон пустого прохода (кадр, сохранённый пользователем), /media/…"
+    )
     created_at: UtcDatetime
     updated_at: UtcDatetime

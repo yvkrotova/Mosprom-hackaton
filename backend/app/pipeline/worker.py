@@ -10,6 +10,9 @@ import threading
 from pathlib import Path
 from typing import Any
 
+import cv2
+import numpy as np
+
 from app.config import Settings
 from app.pipeline.backend_client import BackendClient
 from app.pipeline.detectors import build_detector, detector_kind_for
@@ -64,6 +67,18 @@ class HeartbeatThread(threading.Thread):
         self._stopped.set()
         if self.is_alive():
             self.join(timeout=self._interval_s + 5)
+
+
+def load_reference(settings: Settings, url: str | None):
+    """Эталон пустого прохода зоны (файл в STORAGE_DIR) как BGR-кадр или None."""
+    if not url:
+        return None
+    path = settings.storage_dir / url.removeprefix("/media/")
+    try:
+        return cv2.imdecode(np.fromfile(path, np.uint8), cv2.IMREAD_COLOR)
+    except (OSError, ValueError):
+        logger.warning("Эталон зоны не прочитан: %s", path)
+        return None
 
 
 def config_fingerprint(config: SourceConfig) -> str:
@@ -134,6 +149,7 @@ def run_worker(
             "inference_ms_p95": stats.inference_ms_p95 if stats else None,
             "preprocess_ms_avg": stats.preprocess_ms_avg if stats else None,
             "postprocess_ms_avg": stats.postprocess_ms_avg if stats else None,
+            "scene_ms_avg": stats.scene_ms_avg if stats else None,
             "frames_processed": stats.frames_processed if stats else 0,
             "model_version": state["model_version"],
             "detector_kind": state["detector_kind"],
@@ -172,7 +188,15 @@ def run_worker(
         state["model_version"] = detector.model_version
         state["detector_kind"] = detector.kind
         frames = build_frame_source(config, detector, realtime)
-        pipeline = Pipeline(config, detector, client, tracker_config=settings.tracker_config)
+        pipeline = Pipeline(
+            config,
+            detector,
+            client,
+            tracker_config=settings.tracker_config,
+            scene_hz=settings.scene_analysis_hz,
+            scene_bootstrap_s=settings.scene_bootstrap_s,
+            reference_loader=lambda zone: load_reference(settings, zone.reference_url),
+        )
         state["stats"] = pipeline.stats
         watcher = ConfigWatcher(
             lambda: client.get_config(source_id),

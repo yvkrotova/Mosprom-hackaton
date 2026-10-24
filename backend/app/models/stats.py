@@ -20,6 +20,7 @@ class ProcessingStat(IdMixin, Base):
     inference_ms_p95: Mapped[float | None] = mapped_column(Float)
     preprocess_ms_avg: Mapped[float | None] = mapped_column(Float)
     postprocess_ms_avg: Mapped[float | None] = mapped_column(Float)
+    scene_ms_avg: Mapped[float | None] = mapped_column(Float)
     frames_processed: Mapped[int] = mapped_column(Integer, default=0)
     model_version: Mapped[str | None] = mapped_column(String(200))
     detector_kind: Mapped[str | None] = mapped_column(String(32))

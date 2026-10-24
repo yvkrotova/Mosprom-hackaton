@@ -28,9 +28,11 @@ from app.pipeline.interfaces import (
     ZoneGeometry,
 )
 from app.pipeline.scenarios.registry import get_scenario
+from app.pipeline.scene import SceneAnalyzer, SceneParams
 from app.pipeline.tracker import TrackerConfig, build_tracker
 from app.schemas.enums import Priority
 from app.schemas.internal import SourceConfig
+from app.schemas.sources import ZoneOut
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +45,7 @@ class PipelineStats:
         self._inference_ms: deque[float] = deque(maxlen=window)
         self._preprocess_ms: deque[float] = deque(maxlen=window)
         self._postprocess_ms: deque[float] = deque(maxlen=window)
+        self._scene_ms: deque[float] = deque(maxlen=window)
         self._frame_times: deque[float] = deque(maxlen=window)
 
     def record(
@@ -58,6 +61,14 @@ class PipelineStats:
         if postprocess_ms is not None:
             self._postprocess_ms.append(postprocess_ms)
         self._frame_times.append(time.monotonic())
+
+    def record_scene(self, scene_ms: float) -> None:
+        self._scene_ms.append(scene_ms)
+
+    @property
+    def scene_ms_avg(self) -> float | None:
+        """Среднее время обновления анализа сцены (только кадры, где он считался)."""
+        return round(float(np.mean(self._scene_ms)), 2) if self._scene_ms else None
 
     @property
     def preprocess_ms_avg(self) -> float | None:
@@ -116,12 +127,20 @@ class Pipeline:
         tracker: Tracker | None = None,
         tracker_config: TrackerConfig | None = None,
         run_started_at: datetime | None = None,
+        scene_hz: float = 4.0,
+        scene_bootstrap_s: float = 3.0,
+        reference_loader: Callable[[ZoneOut], np.ndarray | None] | None = None,
     ) -> None:
         self.config = config
         self.detector = detector
         self.stats = PipelineStats()
         self.zones, self.rules, contexts = self._build_rules(config)
         self._pending_config: SourceConfig | None = None  # из потока ConfigWatcher
+        self.scene_hz, self.scene_bootstrap_s = scene_hz, scene_bootstrap_s
+        self.reference_loader = reference_loader
+        self.scene: SceneAnalyzer | None = None
+        self._scene_key = None
+        self._build_scene()
 
         # Трек должен пережить допустимый пропуск наблюдения, иначе после перекрытия
         # человек получит новый track_id и новый эпизод.
@@ -201,6 +220,7 @@ class Pipeline:
         self.config = config
         self.zones, self.rules, contexts = self._build_rules(config)
         self.episodes.reconfigure(contexts, self.zones)
+        self._build_scene()
         logger.info("Конфигурация обновлена: правил %s, зон %s", len(self.rules), len(self.zones))
 
     def process_frame(self, frame: Frame) -> FrameResult:
@@ -235,9 +255,46 @@ class Pipeline:
             self.episodes.zone_states(),
         )
 
+    def _build_scene(self) -> None:
+        """SceneAnalyzer — только если он нужен хотя бы одному правилу, и только для их зон.
+        Пересоздаётся, лишь когда изменились эти зоны, их параметры или эталоны."""
+        scene_zones: dict[str, tuple[ZoneGeometry, SceneParams]] = {}
+        for rule in self.rules:
+            if not rule.instance.requires_scene_analysis:
+                continue
+            make = getattr(rule.params, "scene_params", None)
+            for zone in rule.zones:
+                scene_zones.setdefault(zone.id, (zone, make() if make else SceneParams()))
+        refs = {z.id: z.reference_url for z in self.config.zones if z.id in scene_zones}
+        key = (
+            tuple(sorted((k, repr(v)) for k, v in scene_zones.items())),
+            tuple(sorted(refs.items())),
+        )
+        if key == self._scene_key:
+            return
+        self._scene_key = key
+        if not scene_zones:
+            self.scene = None
+            return
+        references = {}
+        if self.reference_loader is not None:
+            for zone in self.config.zones:
+                if zone.id in scene_zones and zone.reference_url:
+                    image = self.reference_loader(zone)
+                    if image is not None:
+                        references[zone.id] = image
+        self.scene = SceneAnalyzer(
+            scene_zones, hz=self.scene_hz, bootstrap_s=self.scene_bootstrap_s, references=references
+        )
+
     def _analyze_scene(self, frame: Frame, tracks: list[Track], dets) -> dict | None:
         """Анализ сцены (модель фона) — только если он нужен хотя бы одному правилу."""
-        return None
+        if self.scene is None:
+            return None
+        result = self.scene.update(frame, tracks, dets)
+        if self.scene.last_ms is not None:
+            self.stats.record_scene(self.scene.last_ms)
+        return result
 
     def run(
         self,

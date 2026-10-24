@@ -69,6 +69,7 @@ class HeartbeatIn(InputModel):
     inference_ms_p95: float | None = Field(None, ge=0)
     preprocess_ms_avg: float | None = Field(None, ge=0)
     postprocess_ms_avg: float | None = Field(None, ge=0)
+    scene_ms_avg: float | None = Field(None, ge=0)
     frames_processed: int = Field(0, ge=0)
     model_version: str | None = None
     detector_kind: str | None = None

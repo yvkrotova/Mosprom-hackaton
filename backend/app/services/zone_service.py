@@ -3,10 +3,11 @@
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.config import Settings
 from app.errors import NotFoundError
 from app.models import Zone
 from app.schemas.sources import ZoneCreate, ZoneUpdate
-from app.services.source_service import get_source
+from app.services.source_service import get_source, preview
 
 
 def get_zone(session: Session, zone_id: str) -> Zone:
@@ -41,6 +42,39 @@ def update_zone(session: Session, zone_id: str, body: ZoneUpdate) -> Zone:
     return zone
 
 
-def delete_zone(session: Session, zone_id: str) -> None:
-    session.delete(get_zone(session, zone_id))  # правила зоны удаляет ON DELETE CASCADE
+def delete_zone(session: Session, zone_id: str, settings: Settings | None = None) -> None:
+    zone = get_zone(session, zone_id)
+    if settings is not None:
+        _remove_reference_file(settings, zone)
+    session.delete(zone)  # правила зоны удаляет ON DELETE CASCADE
     session.commit()
+
+
+# --- Эталон пустого прохода -------------------------------------------------------------------
+
+
+def _remove_reference_file(settings: Settings, zone: Zone) -> None:
+    if zone.reference_path:
+        (settings.storage_dir / zone.reference_path).unlink(missing_ok=True)
+
+
+def set_reference(session: Session, settings: Settings, zone_id: str) -> Zone:
+    """Текущий кадр-превью источника становится эталоном пустого прохода зоны (анализ сцены
+    сравнивает с ним вместо медианы первых секунд). 422 PREVIEW_UNAVAILABLE — кадра нет."""
+    zone = get_zone(session, zone_id)
+    jpeg = preview(session, zone.source_id)
+    rel = f"references/{zone.id}.jpg"
+    path = settings.storage_dir / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(jpeg)
+    zone.reference_path = rel
+    session.commit()
+    return zone
+
+
+def clear_reference(session: Session, settings: Settings, zone_id: str) -> Zone:
+    zone = get_zone(session, zone_id)
+    _remove_reference_file(settings, zone)
+    zone.reference_path = None
+    session.commit()
+    return zone

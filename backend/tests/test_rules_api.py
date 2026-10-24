@@ -43,8 +43,13 @@ def test_zone_polygon_validation(client, make_source, polygon):
 def test_scenarios_list(client):
     scenarios = client.get("/api/v1/scenarios").json()
     # fall_immobility не готов и в список не попадает.
-    assert [s["scenario_type"] for s in scenarios] == ["danger_zone", "run_fast_movement"]
-    dz = scenarios[0]
+    assert [s["scenario_type"] for s in scenarios] == [
+        "blocked_exit",
+        "danger_zone",
+        "run_fast_movement",
+    ]
+    by_type = {s["scenario_type"]: s for s in scenarios}
+    dz = by_type["danger_zone"]
     assert dz["requires_zone"] is True
     assert dz["defaults"] == {
         "min_confidence": 0.4,
@@ -57,7 +62,14 @@ def test_scenarios_list(client):
     assert set(props) == set(dz["defaults"])
     assert props["min_confidence"]["maximum"] == 1
 
-    run = scenarios[1]
+    run = by_type["run_fast_movement"]
+    assert run["auto_enable"] is True and dz["auto_enable"] is False
+    blocked = by_type["blocked_exit"]
+    assert blocked["requires_zone"] is True and blocked["auto_enable"] is False
+    assert (
+        blocked["defaults"]["confirm_window_s"] == 10.0
+        and blocked["defaults"]["end_window_s"] == 3.0
+    )
     assert run["requires_zone"] is False
     assert run["defaults"]["speed_threshold"] == 1.7 and run["defaults"]["confirm_window_s"] == 0.6
     assert "ростов" in run["params_schema"]["properties"]["speed_threshold"]["description"]
@@ -98,7 +110,11 @@ def test_rule_errors(client, setup, make_source):
     src = setup["src"]
     r = _create(client, source_id=src, scenario_type="fall_immobility")
     assert r.status_code == 422 and r.json()["error"]["code"] == "UNKNOWN_SCENARIO"
-    assert r.json()["error"]["details"]["available"] == ["danger_zone", "run_fast_movement"]
+    assert r.json()["error"]["details"]["available"] == [
+        "blocked_exit",
+        "danger_zone",
+        "run_fast_movement",
+    ]
     r = _create(client, source_id=src, scenario_type="smoking")
     assert r.json()["error"]["code"] == "UNKNOWN_SCENARIO"
 
