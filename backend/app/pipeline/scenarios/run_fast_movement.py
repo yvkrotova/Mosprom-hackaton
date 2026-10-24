@@ -96,6 +96,7 @@ class RunFastMovementRule(ScenarioRule):
     ParamsModel = RunFastParams
     title = "Бег / резкое перемещение"
     icon = "run"
+    color = "#8b7cf6"
     details_fields = {"speed": ("Скорость", "роста/с")}
     description = (
         "Тревога, если человек перемещается быстрее порога в «ростах человека в секунду» "

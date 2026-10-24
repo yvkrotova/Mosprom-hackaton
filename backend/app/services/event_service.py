@@ -1,9 +1,12 @@
 """События (эпизоды): идемпотентный upsert от конвейера и сборка ответа API."""
 
+import csv
+import io
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
-from sqlalchemy import ColumnElement, func, or_, select
+from sqlalchemy import ColumnElement, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
@@ -31,26 +34,45 @@ from app.schemas.events import (
 from app.schemas.internal import EventUpsert
 from app.services.notifier import WsHub
 
+# Особое значение фильтра зоны: события правил «на весь кадр» (zone_id = null).
+NO_ZONE = "none"
+# «Передано мастеру» — подтверждённое нарушение: escalated считается подтверждённым везде
+# (фильтр confirmed, статистика, CSV). Результатов проверки три: не проверено, подтверждено,
+# ложное.
+CONFIRMED_STATUSES = (ReviewStatus.CONFIRMED, ReviewStatus.ESCALATED)
+
+# Каталог, который backend отдаёт как /media (видео эпизода — ссылка на исходный файл).
+_media_root: Path | None = None
+
+
+def configure_media(storage_dir: Path) -> None:
+    global _media_root
+    _media_root = Path(storage_dir).resolve()
+
 
 @dataclass(frozen=True, slots=True)
 class EventFilters:
     scenario_type: ScenarioType | None = None
     source_id: str | None = None
-    zone_id: str | None = None
+    zone_id: str | None = None  # NO_ZONE — только события без зоны
     from_: datetime | None = None
     to: datetime | None = None
     state: EpisodeState | None = None
     review_status: ReviewStatus | None = None
     priority: Priority | None = None
+    site: str | None = None
+    viewed: bool | None = None
+    order: str = "desc"  # по началу эпизода
 
 
 def interval_conditions(from_: datetime | None, to: datetime | None) -> list[ColumnElement]:
-    """Эпизод пересекается с [from, to]. Активный эпизод (ended_at = null) длится до сих пор."""
+    """Период — по началу эпизода: from ≤ started_at ≤ to (одинаково в журнале и статистике,
+    поэтому «Открыть в журнале» из статистики показывает те же эпизоды)."""
     conds: list[ColumnElement] = []
+    if from_ is not None:
+        conds.append(Event.started_at >= as_utc(from_))
     if to is not None:
         conds.append(Event.started_at <= as_utc(to))
-    if from_ is not None:
-        conds.append(or_(Event.ended_at.is_(None), Event.ended_at >= as_utc(from_)))
     return conds
 
 
@@ -59,30 +81,111 @@ def filter_conditions(f: EventFilters) -> list[ColumnElement]:
     for column, value in (
         (Event.scenario_type, f.scenario_type),
         (Event.source_id, f.source_id),
-        (Event.zone_id, f.zone_id),
         (Event.state, f.state),
-        (Event.review_status, f.review_status),
         (Event.priority, f.priority),
     ):
         if value is not None:
             conds.append(column == value)
+    if f.zone_id == NO_ZONE:
+        conds.append(Event.zone_id.is_(None))
+    elif f.zone_id is not None:
+        conds.append(Event.zone_id == f.zone_id)
+    if f.review_status == ReviewStatus.CONFIRMED:
+        conds.append(Event.review_status.in_(CONFIRMED_STATUSES))
+    elif f.review_status is not None:
+        conds.append(Event.review_status == f.review_status)
+    if f.site is not None:
+        conds.append(Event.source_id.in_(select(Source.id).where(Source.site == f.site)))
+    if f.viewed is not None:
+        conds.append(Event.viewed_at.is_not(None) if f.viewed else Event.viewed_at.is_(None))
     return conds
+
+
+def _ordered(query, order: str):
+    if order == "asc":
+        return query.order_by(Event.started_at.asc(), Event.id)
+    return query.order_by(Event.started_at.desc(), Event.id)
 
 
 def list_events(session: Session, f: EventFilters, limit: int, offset: int) -> EventPage:
     conds = filter_conditions(f)
     total = session.scalar(select(func.count()).select_from(Event).where(*conds)) or 0
     events = session.scalars(
-        select(Event)
-        .where(*conds)
-        .options(selectinload(Event.evidence))
-        .order_by(Event.started_at.desc(), Event.id)
+        _ordered(select(Event).where(*conds).options(selectinload(Event.evidence)), f.order)
         .limit(limit)
         .offset(offset)
     ).all()
     return EventPage(
         items=[event_to_out(session, e) for e in events], total=total, limit=limit, offset=offset
     )
+
+
+def mark_viewed(session: Session, hub: WsHub, event_id: str) -> EventOut:
+    """Оператор открыл событие. Идемпотентно; review_status не меняется."""
+    event = get_event(session, event_id)
+    if event.viewed_at is None:
+        event.viewed_at = utcnow()
+        session.commit()
+        publish_event(session, hub, WsMessageType.EVENT_UPDATED, event)
+    return event_to_out(session, event)
+
+
+def unviewed_counts(session: Session, site: str | None = None) -> dict:
+    """Непросмотренные события: всего и по камерам (участок — необязательный фильтр)."""
+    conds = filter_conditions(EventFilters(site=site, viewed=False))
+    rows = session.execute(
+        select(Event.source_id, func.count()).where(*conds).group_by(Event.source_id)
+    ).all()
+    return {
+        "total": sum(count for _, count in rows),
+        "by_source": [{"source_id": sid, "count": count} for sid, count in rows],
+    }
+
+
+REVIEW_RESULT = {
+    ReviewStatus.UNREVIEWED: "Не проверено",
+    ReviewStatus.CONFIRMED: "Подтверждено",
+    ReviewStatus.ESCALATED: "Подтверждено, передано мастеру",
+    ReviewStatus.FALSE_POSITIVE: "Ложное срабатывание",
+}
+STATE_TEXT = {EpisodeState.ACTIVE: "Продолжается", EpisodeState.ENDED: "Завершён"}
+PRIORITY_TEXT = {"low": "Низкий", "medium": "Средний", "high": "Высокий", "critical": "Критический"}
+CSV_BATCH = 500
+
+
+def export_csv(
+    session: Session, f: EventFilters, tz_offset_min: int, scenario_titles: dict[str, str]
+) -> bytes:
+    """Вся выборка (не одна страница) с теми же фильтрами и сортировкой. UTF-8 с BOM, «;».
+    Время — местное со смещением (смещение пояса передаёт браузер, минуты к востоку от UTC)."""
+    tz = timezone(timedelta(minutes=tz_offset_min))
+    sources = dict(session.execute(select(Source.id, Source.name)).all())
+    zones = dict(session.execute(select(Zone.id, Zone.name)).all())
+    buf = io.StringIO()
+    writer = csv.writer(buf, delimiter=";", lineterminator="\r\n")
+    writer.writerow([
+        "Начало (местное время)", "Камера", "Зона", "Нарушение", "Длительность, с",
+        "Уверенность, %", "Состояние эпизода", "Результат проверки", "Приоритет",
+    ])  # fmt: skip
+    query = _ordered(select(Event).where(*filter_conditions(f)), f.order)
+    offset = 0
+    while batch := session.scalars(query.limit(CSV_BATCH).offset(offset)).all():
+        for e in batch:
+            start = as_utc(e.started_at).astimezone(tz)
+            writer.writerow([
+                start.strftime("%Y-%m-%d %H:%M:%S ") + start.strftime("%z")[:3] + ":"
+                + start.strftime("%z")[3:],
+                sources.get(e.source_id, "удалённая камера"),
+                zones.get(e.zone_id, "удалённая зона") if e.zone_id else "Весь кадр",
+                scenario_titles.get(e.scenario_type, e.scenario_type),
+                f"{max(0.0, e.video_ts_end - e.video_ts_start):.1f}".replace(".", ","),
+                round(e.confidence * 100),
+                STATE_TEXT.get(EpisodeState(e.state), e.state),
+                REVIEW_RESULT.get(ReviewStatus(e.review_status), e.review_status),
+                PRIORITY_TEXT.get(e.priority, e.priority),
+            ])  # fmt: skip
+        offset += len(batch)
+    return ("\ufeff" + buf.getvalue()).encode("utf-8")
 
 
 def end_active_events(session: Session, hub: WsHub, source_id: str) -> int:
@@ -145,16 +248,37 @@ def _thumbnail_url(event: Event) -> str | None:
     return None
 
 
+def episode_video(source: Source | None) -> tuple[str | None, str]:
+    """Видео эпизода: ссылка на исходный файл источника (через /media) и пояснение.
+    Отдельных клипов система не режет: интерфейс открывает файл на video_ts_start."""
+    if source is None:
+        return None, "Камера удалена — видео недоступно, есть только кадр"
+    if source.kind != "file":
+        return None, "Поток не записывается — доступен только кадр нарушения"
+    path = Path(source.uri)
+    if _media_root is None or not path.is_file():
+        return None, "Файл видео недоступен на сервере — доступен только кадр нарушения"
+    try:
+        rel = path.resolve().relative_to(_media_root)
+    except ValueError:
+        return None, "Видео лежит вне каталога хранения и не отдаётся браузеру — только кадр"
+    return "/media/" + rel.as_posix(), ""
+
+
 def event_to_out(session: Session, event: Event) -> EventOut:
     source = session.get(Source, event.source_id)
     zone = session.get(Zone, event.zone_id) if event.zone_id else None
     columns = {c.key: getattr(event, c.key) for c in Event.__table__.columns}
+    video_url, video_note = episode_video(source)
     return EventOut.model_validate(
         {
             **columns,
             "source_name": source.name if source else None,
+            "source_site": source.site if source else None,
             "zone_name": zone.name if zone else None,
             "thumbnail_url": _thumbnail_url(event),
+            "video_url": video_url,
+            "video_note": video_note or None,
             "evidence": [EvidenceOut.model_validate(e) for e in event.evidence],
         }
     )
@@ -184,6 +308,11 @@ def upsert_event(
     event = session.get(Event, event_id)
     if event is None:
         return _create(session, hub, event_id, payload)
+
+    if event.state == EpisodeState.ENDED and payload.video_ts_end <= event.video_ts_end + 1e-6:
+        # Повторный прогон той же записи (replay, детерминированный event_id) проходит уже
+        # известный отрезок эпизода: ничего не меняем, тревогу повторно не шлём.
+        return UpsertOutcome.UNCHANGED, event
 
     if event.state == EpisodeState.ENDED and payload.state == EpisodeState.ACTIVE:
         raise ConflictError(

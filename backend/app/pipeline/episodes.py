@@ -41,6 +41,9 @@ logger = logging.getLogger(__name__)
 
 EpisodeKey = tuple[str, str, str | None, int | None]
 TRAIL_S = 1.5  # хвост траектории ног на кадре-доказательстве
+# Пространство имён uuid5 для event_id предзаписанных прогонов (значение фиксировано навсегда).
+REPLAY_EVENT_NAMESPACE = uuid.UUID("6f1c2b9e-4d0a-5b7e-9a51-2c7d3e8f4a10")
+
 _LEVEL_ORDER = {HitLevel.VIOLATION: 3, HitLevel.HOLD: 2, HitLevel.UNKNOWN: 1}
 
 
@@ -103,6 +106,7 @@ class _Candidate:
     rule: RuleContext
     first_ts: float  # первый VIOLATION — начало будущего эпизода
     last_ts: float  # последний VIOLATION
+    first_frame_idx: int = 0  # кадр начала — для детерминированного event_id (replay)
 
 
 @dataclass(slots=True)
@@ -142,8 +146,13 @@ class EpisodeManager:
         model_version: str,
         run_started_at: datetime,
         update_interval_s: float = 1.0,
+        event_id_seed: str | None = None,
     ) -> None:
         self.source_id = source_id
+        # Replay: повторный прогон той же записи даёт те же event_id (журнал без дублей).
+        # seed — SHA-256 JSONL; None — обычный uuid4 (живой поток или живой детектор).
+        self.event_id_seed = event_id_seed
+        self._unknown_reason: str | None = None  # кадр не проанализирован (zone_states)
         self.source_name = source_name
         self.rules = rules
         self.zones = zones
@@ -178,6 +187,7 @@ class EpisodeManager:
         «неизвестным» (человек пропал), а не «нарушения нет». all_tracks — для доказательства."""
         ts = frame.video_ts
         present = {t.track_id for t in tracks}
+        self._unknown_reason = None
 
         # Один сигнал на ключ: самый сильный уровень, затем самая высокая уверенность.
         by_key: dict[EpisodeKey, RuleHit] = {}
@@ -217,7 +227,9 @@ class EpisodeManager:
                 continue  # HOLD и UNKNOWN кандидата не открывают
             cand = self._candidates.get(key)
             if cand is None or ts - cand.last_ts > rule.candidate_gap_s:
-                cand = self._candidates[key] = _Candidate(rule=rule, first_ts=ts, last_ts=ts)
+                cand = self._candidates[key] = _Candidate(
+                    rule=rule, first_ts=ts, last_ts=ts, first_frame_idx=frame.frame_idx
+                )
             cand.last_ts = ts
             if ts - cand.first_ts >= rule.params.confirm_window_s:
                 del self._candidates[key]
@@ -235,6 +247,20 @@ class EpisodeManager:
                 ep.last_sent_ts = ts
                 ep.dirty = False
                 ep.updates_sent += 1
+
+    def process_unanalyzed(self, frame: Frame, reason: str) -> None:
+        """Кадр не проанализирован (нет предзаписанных детекций): «оценить нельзя», а не
+        «нарушения нет». Эпизоды не завершаются явно — только если неизвестность длится дольше
+        gap_tolerance_s, как при пропаже человека из кадра; новые кандидаты не открываются."""
+        ts = frame.video_ts
+        self._last_hits = {}
+        self._unknown_reason = reason
+        for key, ep in list(self._active.items()):
+            if ts - ep.last_ts > ep.rule.params.gap_tolerance_s:
+                self._end(key, ep)
+        for key, cand in list(self._candidates.items()):
+            if ts - cand.last_ts > cand.rule.candidate_gap_s:
+                del self._candidates[key]
 
     def reconfigure(self, rules: dict[str, RuleContext], zones: dict[str, ZoneGeometry]) -> None:
         """Правила поменялись на лету: эпизоды удалённых правил завершаются, у остальных —
@@ -302,6 +328,12 @@ class EpisodeManager:
                 if reason:
                     item["reason"] = reason
 
+        if self._unknown_reason:
+            # Кадр не проанализирован: про него нельзя сказать ни «чисто», ни «нарушение»
+            # (идущий эпизод при этом не завершается — см. process_unanalyzed).
+            for item in pairs.values():
+                item["state"], item["reason"] = "unknown", self._unknown_reason
+            return list(pairs.values())
         for (_, scenario, zone_id, _), hit in self._last_hits.items():
             if hit.level == HitLevel.UNKNOWN and zone_id is not None:
                 raise_to(zone_id, scenario, "unknown", (hit.extra or {}).get("reason"))
@@ -325,7 +357,7 @@ class EpisodeManager:
         tracks: list[Track],
     ) -> None:
         ep = _Episode(
-            event_id=str(uuid.uuid4()),
+            event_id=self._event_id(key, cand),
             rule=rule,
             zone_id=hit.zone_id,
             track_id=hit.track_id,
@@ -349,6 +381,24 @@ class EpisodeManager:
         )
         self._send(ep, EpisodeState.ACTIVE)  # событие раньше кадров: иначе backend ответит 404
         self._send_evidence(ep, hit, frame, tracks)
+
+    def _event_id(self, key: EpisodeKey, cand: _Candidate) -> str:
+        if self.event_id_seed is None:
+            return str(uuid.uuid4())
+        source_id, scenario, zone_id, track_id = key
+        name = "|".join(
+            str(part)
+            for part in (
+                source_id,
+                self.event_id_seed,
+                scenario,
+                cand.rule.rule_id,
+                zone_id,
+                track_id,
+                cand.first_frame_idx,
+            )
+        )
+        return str(uuid.uuid5(REPLAY_EVENT_NAMESPACE, name))
 
     def _end(self, key: EpisodeKey, ep: _Episode) -> None:
         del self._active[key]

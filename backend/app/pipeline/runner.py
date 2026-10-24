@@ -47,6 +47,12 @@ class PipelineStats:
         self._postprocess_ms: deque[float] = deque(maxlen=window)
         self._scene_ms: deque[float] = deque(maxlen=window)
         self._frame_times: deque[float] = deque(maxlen=window)
+        self._frame_ms: deque[float] = deque(maxlen=window)  # время обработки кадра этим процессом
+        # Replay: записанное время инференса (историческое, на LinQ) — за весь прогон, отдельно
+        # от скорости воспроизведения; в inference_ms_* оно не попадает.
+        self.recorded_timings = False
+        self._recorded_inference_ms: list[float] = []
+        self.frames_unanalyzed = 0
 
     def record(
         self,
@@ -55,12 +61,40 @@ class PipelineStats:
         postprocess_ms: float | None = None,
     ) -> None:
         self.frames_processed += 1
-        self._inference_ms.append(inference_ms)
+        if self.recorded_timings:
+            self._recorded_inference_ms.append(inference_ms)
+        else:
+            self._inference_ms.append(inference_ms)
         if preprocess_ms is not None:
             self._preprocess_ms.append(preprocess_ms)
         if postprocess_ms is not None:
             self._postprocess_ms.append(postprocess_ms)
         self._frame_times.append(time.monotonic())
+
+    def record_unanalyzed(self) -> None:
+        """Кадр прочитан, но не проанализирован (нет записи детекций)."""
+        self.frames_processed += 1
+        self.frames_unanalyzed += 1
+        self._frame_times.append(time.monotonic())
+
+    def record_frame_ms(self, frame_ms: float) -> None:
+        self._frame_ms.append(frame_ms)
+
+    @property
+    def frame_ms_avg(self) -> float | None:
+        """Полное время обработки кадра этим процессом (детектор или чтение записи + трекер +
+        правила), мс. Для replay это скорость воспроизведения, а не скорость LinQ."""
+        return round(float(np.mean(self._frame_ms)), 2) if self._frame_ms else None
+
+    def recorded_inference(self) -> dict[str, float | None]:
+        values = self._recorded_inference_ms
+        if not values:
+            return {"avg": None, "p50": None, "p95": None}
+        return {
+            "avg": round(float(np.mean(values)), 2),
+            "p50": round(float(np.percentile(values, 50)), 2),
+            "p95": round(float(np.percentile(values, 95)), 2),
+        }
 
     def record_scene(self, scene_ms: float) -> None:
         self._scene_ms.append(scene_ms)
@@ -130,10 +164,12 @@ class Pipeline:
         scene_hz: float = 4.0,
         scene_bootstrap_s: float = 3.0,
         reference_loader: Callable[[ZoneOut], np.ndarray | None] | None = None,
+        event_id_seed: str | None = None,
     ) -> None:
         self.config = config
         self.detector = detector
         self.stats = PipelineStats()
+        self.stats.recorded_timings = getattr(detector, "recorded_timings", False)
         self.zones, self.rules, contexts = self._build_rules(config)
         self._pending_config: SourceConfig | None = None  # из потока ConfigWatcher
         self.scene_hz, self.scene_bootstrap_s = scene_hz, scene_bootstrap_s
@@ -171,6 +207,7 @@ class Pipeline:
             model_version=detector.model_version,
             run_started_at=run_started_at or utcnow(),
             update_interval_s=config.settings.episode_update_interval_s,
+            event_id_seed=event_id_seed,
         )
 
     @staticmethod
@@ -226,7 +263,17 @@ class Pipeline:
     def process_frame(self, frame: Frame) -> FrameResult:
         """Один кадр: детектор, трекер и анализ сцены — по одному разу; затем все правила читают
         общий FrameContext; EpisodeManager собирает эпизоды."""
+        t0 = time.perf_counter()
         dets = self.detector.infer(frame)
+        if not dets.analyzed:
+            # Нет данных детектора: трекер не обновляется (иначе люди «исчезли бы»), правила не
+            # вызываются, эпизоды и зоны получают «оценить нельзя».
+            self.stats.record_unanalyzed()
+            self.episodes.process_unanalyzed(
+                frame, dets.unanalyzed_reason or "кадр не проанализирован"
+            )
+            self.stats.record_frame_ms((time.perf_counter() - t0) * 1000)
+            return FrameResult([], [], set(), zone_states=self.episodes.zone_states())
         self.stats.record(dets.inference_ms, dets.preprocess_ms, dets.postprocess_ms)
         tracks = self.tracker.update(dets)
         confirmed = [t for t in tracks if t.state == "confirmed"]
@@ -245,6 +292,7 @@ class Pipeline:
             for tid, data in rule.instance.describe(context, rule.zones, rule.params).items():
                 info.setdefault(tid, {}).update(data)
         self.episodes.process(frame, hits, confirmed, tracks)
+        self.stats.record_frame_ms((time.perf_counter() - t0) * 1000)
         return FrameResult(
             tracks,
             hits,

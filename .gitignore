@@ -22,3 +22,6 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .ruff_cache/
+
+# Индекс смещений replay-записей (строится автоматически рядом с JSONL)
+*.jsonl.idx.json

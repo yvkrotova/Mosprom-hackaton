@@ -70,6 +70,12 @@ class HeartbeatIn(InputModel):
     preprocess_ms_avg: float | None = Field(None, ge=0)
     postprocess_ms_avg: float | None = Field(None, ge=0)
     scene_ms_avg: float | None = Field(None, ge=0)
+    frame_ms_avg: float | None = Field(None, ge=0)
+    recorded_inference_ms_avg: float | None = Field(None, ge=0)
+    recorded_inference_ms_p50: float | None = Field(None, ge=0)
+    recorded_inference_ms_p95: float | None = Field(None, ge=0)
+    frames_unanalyzed: int | None = Field(None, ge=0)
+    replay_file: str | None = Field(None, max_length=300)
     frames_processed: int = Field(0, ge=0)
     model_version: str | None = None
     detector_kind: str | None = None
@@ -81,6 +87,14 @@ class PipelineSettings(BaseModel):
     heartbeat_interval_s: float
 
 
+class ReplayBinding(BaseModel):
+    """Какая предзаписанная запись детекций относится к источнику (см. replay_service)."""
+
+    path: str
+    video_sha256: str | None = None
+    origin: Literal["source", "replay_dir", "replay_path"]
+
+
 class SourceConfig(BaseModel):
     """Всё, что нужно воркеру для запуска: источник, его зоны и включённые правила."""
 
@@ -88,3 +102,5 @@ class SourceConfig(BaseModel):
     zones: list[ZoneOut]
     rules: list[RuleOut]
     settings: PipelineSettings
+    replay: ReplayBinding | None = None
+    replay_note: str = Field("", description="Почему запись не найдена (если не найдена)")

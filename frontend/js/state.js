@@ -15,7 +15,19 @@ export const state = {
   serverOnline: null, // null — ещё не знаем (загрузка), true/false — ответил ли backend
   loaded: false, // справочники (камеры, зоны, правила) загружены
   operator: stored("operator", "Оператор смены"),
+  unviewed: { total: 0, by_source: [] }, // непросмотренные события (GET /events/unviewed)
+  site: stored("monitorSite", ""), // участок в «Мониторинге» ("" — все)
 };
+
+// Участки — из реальных источников (поле site), без захардкоженных значений.
+export const sites = () => [...new Set(state.sources.map((s) => s.site).filter(Boolean))].sort();
+
+export async function refreshUnviewed() {
+  try {
+    state.unviewed = await api.unviewed(state.site || undefined);
+    emit("unviewed");
+  } catch { /* счётчик просто не обновится */ }
+}
 
 const bus = new EventTarget();
 export const emit = (name, detail) => bus.dispatchEvent(new CustomEvent(name, { detail }));

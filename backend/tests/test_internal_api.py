@@ -116,9 +116,25 @@ def test_ended_back_to_active_is_409(put, make_source):
     src = make_source()
     event_id = str(uuid.uuid4())
     put(event_id, episode(src, state="ended", ended_at=T0.isoformat()))
-    r = put(event_id, episode(src))
+    r = put(event_id, episode(src, video_ts_end=14.0))  # продолжение после конца
     assert r.status_code == 409
     assert r.json()["error"]["code"] == "EPISODE_ALREADY_ENDED"
+
+
+def test_replay_rerun_of_ended_episode_is_unchanged(app, put, make_source):
+    """Повторный прогон той же записи (детерминированный event_id) проходит уже известный
+    отрезок: событие не меняется, повторной тревоги нет."""
+    src = make_source()
+    event_id = str(uuid.uuid4())
+    put(event_id, episode(src, state="ended", ended_at=T0.isoformat()))
+    later = T0 + timedelta(hours=1)  # второй прогон — другое настенное время
+    r = put(event_id, episode(src, started_at=later.isoformat(), video_ts_end=12.5))
+    assert r.status_code == 200 and r.json()["outcome"] == "unchanged"
+    r = put(event_id, episode(src, state="ended", ended_at=later.isoformat()))
+    assert r.json()["outcome"] == "unchanged"
+    with app.state.session_factory() as s:
+        event = s.get(Event, event_id)
+        assert event.alerts_sent == 1 and event.state == "ended"
 
 
 def test_upsert_never_touches_review_status(app, put, make_source):

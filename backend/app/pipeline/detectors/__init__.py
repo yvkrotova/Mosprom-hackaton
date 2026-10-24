@@ -36,7 +36,9 @@ def build_detector(
 
         if not settings.replay_path:
             raise ValueError("DETECTOR=replay, но REPLAY_PATH не задан")
-        return ReplayDetector(settings.replay_path, analysis_fps)
+        return ReplayDetector(
+            settings.replay_path, analysis_fps, on_missing=settings.replay_on_missing
+        )
     if kind == "onnx":
         from app.pipeline.detectors.onnx import OnnxDetector
 

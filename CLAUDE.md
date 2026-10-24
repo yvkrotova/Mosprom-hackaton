@@ -22,9 +22,12 @@ EpisodeManager: ОДНО событие на эпизод → тревога в 
     export_detections, benchmark_detector, validate_detections; общий `tools/videos.py` (манифест, кэш детекций).
   - `data/videos/`: в git только `manifest.json`, `labels.json` (ЧЕРНОВИК), `inventory.json`. Ролики, превью,
     кэш, рендеры — не в git. Ролики: `data/videos/*.avi|mp4` и `data/storage/videos/0_te*.mp4`.
-- `frontend/` — ванильный JS (ES-модули, без сборки), раздаётся backend на `/`. Экраны: `live.js` (мониторинг,
-  интерполяция рамок, панель треков), `journal.js`, `territory.js` (зоны, правила по JSON Schema, правила
-  «на весь кадр»), `analytics.js`, `event-modal.js` (`#…?event=<id>` открывает карточку).
+- `frontend/` — ванильный JS (ES-модули, без сборки), раздаётся backend на `/`. Оформление — по макетам
+  (тёмно-синяя тема по умолчанию, шрифт Inter OFL в `frontend/fonts`). Оболочка `app.js` (левая панель,
+  настройки, звук, оператор, «Добавить камеру»), экраны: `monitoring.js` (сетка 1–9, canvas поверх кадра,
+  панель событий), `journal.js`, `zones.js` (черновик → PUT layout), `statistics.js` (+ печать),
+  `event-modal.js` (видео эпизода/кадр, проверка), `geometry.js` (проверка контура как в backend).
+  Снимки экранов — `frontend/design/screenshots/` (1586×992).
 - `linq/` (на Windows = `LinQ/`, в git — `linq/`): fetch_materials, check_onnx_ops (окружение
   `linq/.venv-tools` с onnx), prepare_calibration (199 кадров в `linq/calibration/`, не в git), compile.py (каркас),
   export_onnx, compare_with_onnx, benchmark_linq, `notebooks/run_linq_detections.ipynb`. `linq/extracted/` —
@@ -81,6 +84,31 @@ GET /scenarios), зоны рисуются по zone_states (кандидат м
 - Правило — чистая функция кадра (Strategy): без состояния инцидентов; эпизоды — только `EpisodeManager`.
 - Единый контракт события и единая отрисовка (`annotate.py`); фронт берёт сценарии из GET /scenarios.
 - Всё время — по `video_ts`. Новый сценарий: файл в `pipeline/scenarios/` по `_template.py` + регистрация.
+
+## Задача «ReplayDetector + API + фронт по макетам» (промпт с этапами 0/A/B/C)
+Файлов ТЗ `backend/docs/specs/*.md`, `frontend/design/**` в репозитории НЕТ — работа по тексту промпта
+и четырём макетам (были приложены картинками к сообщению).
+Этап A — готово: `detectors/yolo_core.py` (пре/пост без зависимостей от backend), `replay_format.py`
+(schema v2: заголовок + кадры в пикселях + сводка, индекс `<файл>.idx.json`, проверки), ReplayDetector
+по frame_idx (REPLAY_ON_MISSING=error|unknown, verify_video, check_schedule), источник: replay_path,
+video_sha256 (кеш), run_started_at; REPLAY_DIR; `replay_service.resolve`; uuid5 event_id для replay
+(EpisodeManager.event_id_seed) + повтор завершённого эпизода → unchanged; метрики recorded_inference_*,
+frame_ms_avg, frames_unanalyzed (миграция 0006, там же events.viewed_at); воркер получает все настройки
+backend через env (не читает .env сам); `linq/run_linq_detections.py` + notebook (LinqTransport,
+резюм, fsync, warm-up вне статистики); тесты test_replay.py, test_replay_api.py.
+Этап B — готово: POST /events/{id}/view, GET /events/unviewed, фильтры order/zone_id=none/site/
+viewed, период по НАЧАЛУ эпизода (журнал = CSV = статистика), GET /events/export.csv (вся выборка,
+BOM, «;», tz_offset_min), escalated = подтверждено + «передано мастеру», stats.summary (+инвариант) и
+demo, metrics по запуску (measurement_state, recorded_*, latency по камере), Event.video_url/
+video_note (/media), PUT /sources/{id}/layout (атомарно, все ошибки с индексами),
+geometry.polygon_problems (в схеме Polygon и в layout). Тесты test_operator_api.py. CONTRACT.md —
+раздел «Replay, экраны оператора, разметка».
+Этап C — готово: фронт переписан по макетам (live.js/territory.js/analytics.js/charts.js удалены),
+проверен в headless Edge (ошибок JS нет): сетка 1–9 и раскрытие, сворачивание меню, рисование зоны
+кликами + сохранение одной операцией, карточка с видео эпизода, светлая тема, печать статистики.
+Сценарию добавлены метаданные `color` (цвет зоны по назначению). Ручной чек-лист — README.
+Осталось: прогнать `linq/run_linq_detections.py` в Jupyter LinQ (нужен VPN — делает человек) и показать
+replay на настоящей записи; живой LinQ (`DETECTOR=linq`) не проверялся с этой машины.
 
 ## Статус (2026-10-24)
 Готово: ByteTrack, `run_fast_movement` (порог 1.5, подтверждён частично), живые треки во фронте, проверка

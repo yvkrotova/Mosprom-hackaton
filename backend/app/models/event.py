@@ -39,6 +39,8 @@ class Event(IdMixin, TimestampMixin, Base):
     received_at: Mapped[datetime] = mapped_column(UtcDateTime, default=utcnow)
     notified_at: Mapped[datetime | None] = mapped_column(UtcDateTime)
     alerts_sent: Mapped[int] = mapped_column(Integer, default=0)
+    # Оператор открыл событие (лента «Новые»). Не связано с review_status.
+    viewed_at: Mapped[datetime | None] = mapped_column(UtcDateTime)
 
     model_version: Mapped[str] = mapped_column(String(200))
     rule_id: Mapped[str | None] = mapped_column(String(36))

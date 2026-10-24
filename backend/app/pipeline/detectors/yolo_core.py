@@ -1,0 +1,249 @@
+"""Пре- и постпроцессинг YOLOv8 (detect) без зависимостей от backend (только numpy и OpenCV).
+
+Один и тот же код используют:
+- backend (yolo_common.py → OnnxDetector, LinqDetector);
+- скрипт linq/run_linq_detections.py в Jupyter организаторов (файл загружается рядом со скриптом).
+Поэтому здесь нельзя импортировать app.*: модуль должен работать как отдельный файл.
+
+Выход YOLOv8 detect без NMS: [1, 4 + C, N] (для COCO 640x640: [1, 84, 8400]).
+Первые 4 строки — cx, cy, w, h в пикселях входа сети; остальные C — оценки классов
+(уже после sigmoid, objectness у v8 нет).
+"""
+
+import ast
+from collections.abc import Iterable
+from dataclasses import dataclass
+
+import cv2
+import numpy as np
+
+# Классы COCO (80) в порядке выхода YOLOv8 — для имён и фильтра DETECT_CLASSES, если metadata
+# модели недоступна (программа LinQ её не хранит).
+COCO_NAMES: dict[int, str] = dict(
+    enumerate(
+        [
+            "person",
+            "bicycle",
+            "car",
+            "motorcycle",
+            "airplane",
+            "bus",
+            "train",
+            "truck",
+            "boat",
+            "traffic light",
+            "fire hydrant",
+            "stop sign",
+            "parking meter",
+            "bench",
+            "bird",
+            "cat",
+            "dog",
+            "horse",
+            "sheep",
+            "cow",
+            "elephant",
+            "bear",
+            "zebra",
+            "giraffe",
+            "backpack",
+            "umbrella",
+            "handbag",
+            "tie",
+            "suitcase",
+            "frisbee",
+            "skis",
+            "snowboard",
+            "sports ball",
+            "kite",
+            "baseball bat",
+            "baseball glove",
+            "skateboard",
+            "surfboard",
+            "tennis racket",
+            "bottle",
+            "wine glass",
+            "cup",
+            "fork",
+            "knife",
+            "spoon",
+            "bowl",
+            "banana",
+            "apple",
+            "sandwich",
+            "orange",
+            "broccoli",
+            "carrot",
+            "hot dog",
+            "pizza",
+            "donut",
+            "cake",
+            "chair",
+            "couch",
+            "potted plant",
+            "bed",
+            "dining table",
+            "toilet",
+            "tv",
+            "laptop",
+            "mouse",
+            "remote",
+            "keyboard",
+            "cell phone",
+            "microwave",
+            "oven",
+            "toaster",
+            "sink",
+            "refrigerator",
+            "book",
+            "clock",
+            "vase",
+            "scissors",
+            "teddy bear",
+            "hair drier",
+            "toothbrush",
+        ]
+    )
+)
+
+
+@dataclass(frozen=True, slots=True)
+class LetterboxInfo:
+    """Как исходный кадр вписан во вход сети — нужно, чтобы вернуть боксы обратно."""
+
+    scale: float
+    pad_x: int
+    pad_y: int
+    frame_w: int
+    frame_h: int
+
+
+def letterbox(
+    image_bgr: np.ndarray, size: int = 640, pad_value: int = 114
+) -> tuple[np.ndarray, LetterboxInfo]:
+    """BGR uint8 (H, W, 3) -> тензор [1, 3, size, size] float32, RGB, 0..1.
+
+    Масштаб с сохранением пропорций, кадр по центру, поля залиты pad_value (как в ultralytics).
+    """
+    h, w = image_bgr.shape[:2]
+    scale = min(size / w, size / h)
+    new_w, new_h = round(w * scale), round(h * scale)
+    resized = cv2.resize(image_bgr, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+    pad_x, pad_y = (size - new_w) // 2, (size - new_h) // 2
+    canvas = np.full((size, size, 3), pad_value, dtype=np.uint8)
+    canvas[pad_y : pad_y + new_h, pad_x : pad_x + new_w] = resized
+    rgb = canvas[:, :, ::-1]
+    tensor = np.ascontiguousarray(rgb.transpose(2, 0, 1)[None], dtype=np.float32) / 255.0
+    return tensor, LetterboxInfo(scale, pad_x, pad_y, w, h)
+
+
+def nms(boxes_xyxy: np.ndarray, scores: np.ndarray, iou_threshold: float) -> np.ndarray:
+    """Классический NMS. Возвращает индексы оставшихся боксов по убыванию score."""
+    order = scores.argsort()[::-1]
+    x1, y1, x2, y2 = boxes_xyxy.T
+    areas = (x2 - x1).clip(0) * (y2 - y1).clip(0)
+    keep = []
+    while order.size:
+        i = order[0]
+        keep.append(i)
+        rest = order[1:]
+        iw = (np.minimum(x2[i], x2[rest]) - np.maximum(x1[i], x1[rest])).clip(0)
+        ih = (np.minimum(y2[i], y2[rest]) - np.maximum(y1[i], y1[rest])).clip(0)
+        inter = iw * ih
+        iou = inter / (areas[i] + areas[rest] - inter + 1e-9)
+        order = rest[iou <= iou_threshold]
+    return np.array(keep, dtype=np.int64)
+
+
+def decode(
+    output: np.ndarray,
+    info: LetterboxInfo,
+    *,
+    conf_threshold: float = 0.35,
+    iou_threshold: float = 0.45,
+    class_ids: Iterable[int] | None = None,
+    max_det: int = 300,
+) -> list[tuple[int, float, tuple[float, float, float, float]]]:
+    """Сырой выход YOLOv8 -> [(класс, уверенность, (x1, y1, x2, y2) в ПИКСЕЛЯХ исходного кадра)].
+
+    Шаги: транспонирование, лучший класс, порог, фильтр классов, cxcywh -> xyxy,
+    NMS отдельно по каждому классу, снятие паддинга и масштаба, обрезка по кадру.
+    Рамки нулевой площади отбрасываются.
+    """
+    pred = np.asarray(output, dtype=np.float32)
+    if pred.ndim == 3:
+        pred = pred[0]
+    if pred.ndim != 2 or pred.shape[0] < 5:
+        raise ValueError(f"Неожиданная форма выхода YOLO: {np.shape(output)}")
+    pred = pred.T  # (N, 4 + C)
+
+    class_scores = pred[:, 4:]
+    cls = class_scores.argmax(axis=1)
+    conf = class_scores[np.arange(len(cls)), cls]
+    mask = conf >= conf_threshold
+    if class_ids is not None:
+        mask &= np.isin(cls, list(class_ids))
+    if not mask.any():
+        return []
+    boxes, conf, cls = pred[mask, :4], conf[mask], cls[mask]
+
+    cx, cy, bw, bh = boxes.T
+    xyxy = np.stack([cx - bw / 2, cy - bh / 2, cx + bw / 2, cy + bh / 2], axis=1)
+
+    # NMS по классам: сдвигаем боксы разных классов так, чтобы они не пересекались.
+    offset = cls[:, None].astype(np.float32) * (xyxy.max() + 1.0)
+    keep = nms(xyxy + offset, conf, iou_threshold)[:max_det]
+    xyxy, conf, cls = xyxy[keep], conf[keep], cls[keep]
+
+    xyxy[:, [0, 2]] = ((xyxy[:, [0, 2]] - info.pad_x) / info.scale).clip(0, info.frame_w)
+    xyxy[:, [1, 3]] = ((xyxy[:, [1, 3]] - info.pad_y) / info.scale).clip(0, info.frame_h)
+    min_w, min_h = 1e-4 * info.frame_w, 1e-4 * info.frame_h
+    return [
+        (int(c), float(s), (float(b[0]), float(b[1]), float(b[2]), float(b[3])))
+        for b, s, c in zip(xyxy, conf, cls, strict=True)
+        if b[2] - b[0] > min_w and b[3] - b[1] > min_h
+    ]
+
+
+def quantize(x: np.ndarray, scale: float, zero_point: int, dtype=np.int8) -> np.ndarray:
+    """float -> int8/uint8 по аффинной схеме q = round(x / scale) + zero_point (с насыщением)."""
+    info = np.iinfo(dtype)
+    return np.clip(np.round(x / scale) + zero_point, info.min, info.max).astype(dtype)
+
+
+def dequantize(q: np.ndarray, scale: float, zero_point: int) -> np.ndarray:
+    """int8/uint8 -> float32: x = (q − zero_point) · scale. Параметры даёт компилятор LinQ."""
+    return (q.astype(np.float32) - np.float32(zero_point)) * np.float32(scale)
+
+
+def to_float_output(raw, output_quant: tuple[float, int] | None) -> np.ndarray:
+    """Выход сети -> float32. Целочисленный выход без параметров деквантования — ошибка."""
+    arr = np.asarray(raw)
+    if np.issubdtype(arr.dtype, np.integer):
+        if output_quant is None:
+            raise ValueError(
+                f"Выход сети целочисленный ({arr.dtype}), но не заданы scale/zero_point выхода "
+                "— возьмите их из отчёта компилятора LinQ"
+            )
+        return dequantize(arr, *output_quant)
+    return arr.astype(np.float32, copy=False)
+
+
+def parse_names(raw: str | dict | None) -> dict[int, str]:
+    """Имена классов из metadata модели ultralytics: строка вида "{0: 'person', ...}"."""
+    if not raw:
+        return {}
+    data = ast.literal_eval(raw) if isinstance(raw, str) else raw
+    return {int(k): str(v) for k, v in data.items()}
+
+
+def resolve_class_ids(labels: Iterable[str], names: dict[int, str]) -> set[int] | None:
+    """DETECT_CLASSES ("person,car") -> id классов. Пустой список — все классы (None)."""
+    wanted = [label.strip() for label in labels if label.strip()]
+    if not wanted:
+        return None
+    by_name = {name: idx for idx, name in names.items()}
+    unknown = [label for label in wanted if label not in by_name]
+    if unknown:
+        raise ValueError(f"Классов {unknown} нет в модели (есть: {sorted(by_name)[:10]}…)")
+    return {by_name[label] for label in wanted}

@@ -5,6 +5,11 @@ from pydantic import Field
 from app.schemas.common import ApiModel, InputModel, Polygon, UtcDatetime
 from app.schemas.enums import SourceKind, SourceStatus
 
+REPLAY_PATH_DESCRIPTION = (
+    "Предзаписанные детекции (JSONL schema v2) на сервере: абсолютный путь или путь от "
+    "STORAGE_DIR. Задан — источник анализируется ReplayDetector'ом по этой записи."
+)
+
 
 class SourceCreate(InputModel):
     name: str = Field(min_length=1, max_length=200, examples=["Камера 3 — цех штамповки"])
@@ -14,6 +19,7 @@ class SourceCreate(InputModel):
     analysis_fps: float | None = Field(
         None, gt=0, le=60, description="Частота анализа кадров; по умолчанию DEFAULT_ANALYSIS_FPS"
     )
+    replay_path: str | None = Field(None, max_length=2000, description=REPLAY_PATH_DESCRIPTION)
 
 
 class SourceUpdate(InputModel):
@@ -21,6 +27,9 @@ class SourceUpdate(InputModel):
     uri: str | None = Field(None, min_length=1, max_length=2000)
     site: str | None = Field(None, max_length=200)
     analysis_fps: float | None = Field(None, gt=0, le=60)
+    replay_path: str | None = Field(
+        None, max_length=2000, description=REPLAY_PATH_DESCRIPTION + " Пустая строка — отвязать."
+    )
 
 
 class SourceOut(ApiModel):
@@ -33,6 +42,9 @@ class SourceOut(ApiModel):
     last_error: str | None
     last_heartbeat_at: UtcDatetime | None
     analysis_fps: float
+    replay_path: str | None = Field(None, description="Привязанная запись детекций (replay)")
+    video_sha256: str | None = Field(None, description="SHA-256 видеофайла (если посчитан)")
+    run_started_at: UtcDatetime | None = Field(None, description="Начало последнего запуска")
     created_at: UtcDatetime
     updated_at: UtcDatetime
 
@@ -72,5 +84,6 @@ class ZoneOut(ApiModel):
     reference_url: str | None = Field(
         None, description="Эталон пустого прохода (кадр, сохранённый пользователем), /media/…"
     )
+    enabled: bool = Field(False, description="Зона активна: есть правила и все включены")
     created_at: UtcDatetime
     updated_at: UtcDatetime

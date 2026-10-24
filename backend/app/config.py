@@ -24,7 +24,14 @@ class Settings(BaseSettings):
     frontend_dir: Path | None = BACKEND_DIR.parent / "frontend"
 
     detector: Literal["mock", "replay", "onnx", "linq"] = "mock"
+    # Предзаписанные детекции (replay JSONL, schema v2). Запись привязывается к источнику полем
+    # replay_path; иначе ищется в REPLAY_DIR по SHA-256 видео; REPLAY_PATH — один файл на всё
+    # приложение (запасной вариант, с предупреждением).
     replay_path: str = ""
+    replay_dir: str = ""
+    # Нет записи для кадра, который должен анализироваться: error — ошибка источника;
+    # unknown — кадр «не проанализирован», правила считают его «оценить нельзя».
+    replay_on_missing: Literal["error", "unknown"] = "error"
     # Сценарий заглушки: danger_zone (вход в зону) или run_fast_movement (ходьба, бег, помехи).
     mock_scenario: Literal["danger_zone", "run_fast_movement"] = "danger_zone"
     # YOLOv8 (onnx и linq): путь к модели, размер входа, пороги, классы через запятую.

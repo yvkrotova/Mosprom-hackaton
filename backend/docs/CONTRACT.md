@@ -543,3 +543,83 @@ curl "http://localhost:8000/api/v1/events?scenario_type=danger_zone&source_id=0b
 - **`/ws/live/{id}` кадр:** `zone_states: [{zone_id, scenario_type, state: clear|candidate|violation|unknown,
   reason}]`; у трека флаг `trail` (правило просит рисовать след).
 - **Метрики:** `scene_ms_avg` — анализ сцены, мс на обновление (null — не нужен).
+
+## Replay, экраны оператора, разметка (2026-10-24, этапы A–B)
+
+### Источник и предзаписанные детекции (replay)
+- `Source`: `replay_path` (привязанная запись JSONL schema v2), `video_sha256` (кеш SHA-256 видео;
+  считается при загрузке файла, пересчитывается, если файл изменился), `run_started_at` (начало
+  последнего запуска — к нему относятся замеры и задержки в `/metrics`).
+- `POST /sources/upload` — необязательное поле формы `replay` (JSONL). Битая запись → `422
+  INVALID_REPLAY` с причиной (номер строки), источник не создаётся.
+- `POST /sources/{id}/replay` (multipart `file`) — загрузить запись для существующего источника
+  (`STORAGE_DIR/replays/<id>.jsonl`). `PATCH /sources/{id}` `{"replay_path": "..."}` — путь на сервере
+  (абсолютный или от `STORAGE_DIR`), `""` — отвязать. У запущенного источника менять нельзя (409).
+- Поиск записи: `replay_path` → `REPLAY_DIR` (по SHA-256 видео из заголовка) → `REPLAY_PATH`.
+  Формат, проверки, политика пропусков и метрики — `CV_CONTRACT.md`, «Replay v2».
+- **Повторный прогон:** для replay `event_id` детерминирован (uuid5, см. CV_CONTRACT). Повтор уже
+  известного отрезка завершённого эпизода (`video_ts_end` не больше сохранённого) → `outcome:
+  unchanged`, тревога не повторяется. Продолжение после конца (`video_ts_end` больше) — по-прежнему
+  `409 EPISODE_ALREADY_ENDED`.
+
+### События
+- Новые поля `Event`: `viewed_at` (оператор открыл событие; **не** меняет `review_status`),
+  `source_site`, `video_url` + `video_note`. `video_url` — исходный файл источника через `/media/…`
+  (эпизод — `video_ts_start..video_ts_end`, интерфейс сам ставит видео на начало); клипы не режутся.
+  Для потоков и недоступных файлов `video_url = null`, `video_note` объясняет, что есть только кадр.
+- `POST /events/{id}/view` → `200 Event` — идемпотентно, шлёт `event.updated` в WS.
+- `GET /events/unviewed?site=` → `{"total", "by_source": [{"source_id", "count"}]}`.
+- `GET /events` — новые параметры: `order=desc|asc` (по началу эпизода), `zone_id=none` (только
+  события «на весь кадр»), `site`, `viewed=true|false`. Все фильтры совместные.
+- **Период `from`/`to` — по началу эпизода** (`from ≤ started_at ≤ to`), одинаково в журнале,
+  CSV и статистике (раньше было пересечение интервалов).
+- `GET /events/export.csv` — те же фильтры и `order`, **вся выборка**; `tz_offset_min` — смещение
+  местного времени браузера от UTC в минутах (−840…840). UTF-8 с BOM, разделитель `;`. Колонки: начало
+  (`2026-10-24 11:00:00 +03:00`), камера, зона («Весь кадр»), нарушение (название сценария), длительность
+  с (по времени видео, запятая), уверенность %, состояние эпизода, результат проверки, приоритет.
+
+### Результат проверки и «Передано мастеру» (решение)
+Результатов проверки три: **не проверено / подтверждено / ложное**. `escalated` («передано мастеру») —
+это подтверждённое нарушение с пометкой: фильтр `review_status=confirmed` включает `escalated`,
+`review_status=escalated` — только переданные; в статистике `confirmed` включает переданных, а
+`escalated` — «из них передано мастеру»; в CSV — «Подтверждено, передано мастеру». Поэтому
+`unreviewed + confirmed + false_positive = total` всегда. Переходы — прежние (`REVIEW_TRANSITIONS`).
+Имя оператора — поле `author` действия (фронт берёт его из меню пользователя).
+
+### Статистика
+`GET /stats?from=&to=&source_id=&site=` — добавлены:
+- `summary`: `total`, `active`, `unreviewed`, `confirmed` (с переданными), `escalated`,
+  `false_positive`, `avg_zone_time_s` (среднее `video_ts_end − video_ts_start` завершённых эпизодов
+  `danger_zone`; `null` — таких нет), `alerts_per_episode` (сумма `alerts_sent` / эпизоды; `alerts_sent`
+  растёт только при `event.created`, повторная доставка не считается; `null` — эпизодов нет).
+- `demo`: `{"is_demo", "reason"}` — события от заглушки (`model_version` mock…) или камера
+  анализировалась `detector_kind=mock`. Интерфейс пишет «Демонстрационные данные» только при `is_demo`.
+
+### Замеры `GET /metrics`
+По каждой камере (для «Все камеры» — список, не одна камера за всех): `source_status`,
+`run_started_at`, `measurement_state` (`not_started` | `pending` | `running` | `stale` | `finished`),
+`ts` (время замера), `fps` (обработка этим процессом), `inference_ms_avg/p95` (живой детектор),
+`preprocess_ms_avg`, `postprocess_ms_avg`, `frame_ms_avg`, `frames_processed` (за запуск),
+replay: `recorded_inference_ms_avg/p50/p95` (историческое время на LinQ из записи; `inference_ms_*`
+при этом `null`), `frames_unanalyzed`, `replay_file`; `latency` — задержки по событиям этого запуска:
+обнаружение по видео и по реальному времени (avg и p95), уведомление (avg и p95), тревог на эпизод.
+Замер «устарел» (`stale`), если heartbeat не приходит дольше 5 интервалов или замер от прошлого запуска.
+
+### Разметка камеры одной операцией
+`PUT /sources/{id}/layout` → `200 {"zones": Zone[], "rules": Rule[]}`:
+```json
+{"zones": [{"id": "…или null", "name": "Опасная зона", "polygon": [[0.1,0.1],[0.5,0.1],[0.5,0.5]],
+            "scenario_types": ["danger_zone"], "enabled": true}],
+ "frame_rules": [{"scenario_type": "run_fast_movement", "enabled": true, "params": null}]}
+```
+Полный набор зон: отсутствующие удаляются (с правилами; журнал событий остаётся). Назначение зоны —
+`scenario_types` (сценарии с `requires_zone`), активность — `enabled` всех правил зоны (`Zone.enabled`
+в ответе). Сначала проверяется весь черновик, ошибки — сразу все: `422 INVALID_LAYOUT`,
+`details.errors = [{"zone_index", "zone_id", "field": "name|polygon|scenario_types|id", "message"}]`
+или `{"frame_rule_index", ...}`; при ошибке не меняется ничего. Запущенный анализ подхватывает
+изменения сам (воркер перечитывает конфигурацию раз в `CONFIG_RELOAD_S`).
+
+### Проверка контура
+Общая функция `app/pipeline/geometry.py: polygon_problems` (та же логика — `frontend/js/geometry.js`):
+минимум 3 разные точки, координаты 0..1, ненулевая площадь (≥ 0.0001 кадра), без самопересечений.
+Применяется в `POST/PATCH` зон (422 с текстом) и в `PUT layout`.

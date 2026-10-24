@@ -41,10 +41,20 @@ def upload_source(
     name: Annotated[str, Form(min_length=1, max_length=200)],
     site: Annotated[str | None, Form(max_length=200)] = None,
     analysis_fps: Annotated[float | None, Form(gt=0, le=60)] = None,
+    replay: Annotated[
+        UploadFile | None,
+        File(description="Необязательно: предзаписанные детекции этого видео (JSONL schema v2)"),
+    ] = None,
 ) -> SourceOut:
     source = source_service.upload_video(
         db, settings, file.file, file.filename, name, site or None, analysis_fps
     )
+    if replay is not None and replay.filename:
+        try:
+            source_service.attach_replay(db, settings, source, replay.file, replay.filename)
+        except Exception:
+            source_service.delete_source(db, settings, source.id)  # видео без годной записи
+            raise
     rule_service.ensure_default_rules(db, source.id)
     if settings.auto_start_on_upload:
         # Анализ сразу после загрузки. Ошибка запуска не ломает загрузку: источник создан,
@@ -65,8 +75,27 @@ def get_source(source_id: str, db: DbSession) -> SourceOut:
 
 
 @router.patch("/sources/{source_id}", response_model=SourceOut)
-def update_source(source_id: str, body: SourceUpdate, db: DbSession) -> SourceOut:
-    return SourceOut.model_validate(source_service.update_source(db, source_id, body))
+def update_source(
+    source_id: str, body: SourceUpdate, db: DbSession, settings: SettingsDep
+) -> SourceOut:
+    return SourceOut.model_validate(source_service.update_source(db, source_id, body, settings))
+
+
+@router.post(
+    "/sources/{source_id}/replay",
+    response_model=SourceOut,
+    summary="Загрузить предзаписанные детекции (JSONL) и привязать к источнику",
+)
+def upload_replay(
+    source_id: str,
+    db: DbSession,
+    settings: SettingsDep,
+    file: Annotated[UploadFile, File(description="JSONL schema v2 (linq/run_linq_detections.py)")],
+) -> SourceOut:
+    source = source_service.get_source(db, source_id)
+    return SourceOut.model_validate(
+        source_service.attach_replay(db, settings, source, file.file, file.filename)
+    )
 
 
 @router.delete("/sources/{source_id}", status_code=status.HTTP_204_NO_CONTENT)

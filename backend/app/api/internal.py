@@ -24,7 +24,7 @@ from app.schemas.internal import (
 from app.schemas.live import LiveFrameMeta
 from app.schemas.rules import RuleOut
 from app.schemas.sources import SourceOut, ZoneOut
-from app.services import event_service, evidence_service, source_service
+from app.services import event_service, evidence_service, replay_service, source_service
 
 
 def require_internal_token(
@@ -131,7 +131,10 @@ def source_config(source_id: str, db: DbSession, settings: SettingsDep) -> Sourc
         .where(Rule.source_id == source.id, Rule.enabled.is_(True))
         .order_by(Rule.created_at)
     )
+    replay, note = replay_service.resolve(db, settings, source)
     return SourceConfig(
+        replay=replay,
+        replay_note=note,
         source=SourceOut.model_validate(source),
         zones=[ZoneOut.model_validate(z) for z in zones],
         rules=[RuleOut.model_validate(r) for r in rules],

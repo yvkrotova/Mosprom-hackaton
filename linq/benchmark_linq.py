@@ -30,9 +30,19 @@ def stats(values: list[float]) -> dict | None:
 
 
 def summarize(path: Path, warmup: int) -> dict:
-    recs = [
-        json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()
-    ][warmup:]
+    """v1 — отбрасываются первые warmup кадров; v2 — warm-up уже исключён при записи."""
+    lines = [json.loads(x) for x in path.read_text(encoding="utf-8").splitlines() if x.strip()]
+    header = lines[0] if lines and lines[0].get("type") == "header" else None
+    recs = [r for r in lines if not r.get("type")]
+    if header:
+        model = header.get("model") or {}
+        for r in recs:
+            r.setdefault("detector_kind", header["detector_kind"])
+            r.setdefault("model_version", model.get("version"))
+            r.setdefault("frame_w", header["video"]["width"])
+            r.setdefault("frame_h", header["video"]["height"])
+    else:
+        recs = recs[warmup:]
     get = lambda key: [r[key] for r in recs if r.get(key) is not None]  # noqa: E731
     inference, device = get("inference_ms"), get("device_ms")
     network = [r["inference_ms"] - r["device_ms"] for r in recs if r.get("device_ms") is not None]

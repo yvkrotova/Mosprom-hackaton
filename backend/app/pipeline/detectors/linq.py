@@ -12,6 +12,7 @@ import numpy as np
 
 from app.config import Settings
 from app.pipeline.detectors.yolo_common import (
+    COCO_NAMES,
     dequantize,
     letterbox,
     postprocess,
@@ -19,10 +20,6 @@ from app.pipeline.detectors.yolo_common import (
     resolve_class_ids,
 )
 from app.pipeline.interfaces import Detector, Frame, FrameDetections
-
-# Классы COCO, нужные сценариям. Полную таблицу берите из metadata модели (yolo_common.parse_names),
-# если программа LinQ её сохраняет.
-COCO_NAMES: dict[int, str] = {0: "person", 2: "car", 3: "motorcycle", 5: "bus", 7: "truck"}
 
 
 class LinqDetector(Detector):

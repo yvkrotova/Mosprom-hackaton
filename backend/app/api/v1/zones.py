@@ -1,19 +1,36 @@
 """Зоны на кадре источника."""
 
 from fastapi import APIRouter, Response, status
+from sqlalchemy import select
 
 from app.api.deps import DbSession, SettingsDep
-from app.models import Zone
+from app.models import Rule, Zone
+from app.schemas.layout import LayoutIn, LayoutOut
+from app.schemas.rules import RuleOut
 from app.schemas.sources import ZoneCreate, ZoneOut, ZoneUpdate
-from app.services import rule_service, zone_service
+from app.services import layout_service, rule_service, zone_service
 
 router = APIRouter(tags=["zones"])
 
 
 def _out(db, zone: Zone) -> ZoneOut:
     out = ZoneOut.model_validate(zone)
-    out.scenario_types = rule_service.zone_scenarios(db, zone.id)
+    rules = list(db.scalars(select(Rule).where(Rule.zone_id == zone.id)))
+    out.scenario_types = sorted(r.scenario_type for r in rules)
+    out.enabled = bool(rules) and all(r.enabled for r in rules)
     return out
+
+
+@router.put(
+    "/sources/{source_id}/layout",
+    response_model=LayoutOut,
+    summary="Сохранить разметку камеры одной операцией (все зоны и правила на весь кадр)",
+)
+def put_layout(source_id: str, body: LayoutIn, db: DbSession, settings: SettingsDep) -> LayoutOut:
+    zones, rules = layout_service.apply_layout(db, settings, source_id, body)
+    return LayoutOut(
+        zones=[_out(db, z) for z in zones], rules=[RuleOut.model_validate(r) for r in rules]
+    )
 
 
 @router.get("/sources/{source_id}/zones", response_model=list[ZoneOut])

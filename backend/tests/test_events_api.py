@@ -65,19 +65,13 @@ def test_single_filters(client, journal, params, expected):
     assert ids_of(client.get(URL, params=params)) == [journal[k] for k in expected]
 
 
-def test_time_interval_is_intersection(client, journal):
-    # [10:00, 12:00]: cross (началось раньше), inside, active (ещё идёт). Не early и не late.
+def test_time_interval_is_by_episode_start(client, journal):
+    # Период — по началу эпизода (как в статистике). [10:00, 12:00]: inside (10:30) и ongoing
+    # (11:00); cross начался в 09:50 — не входит, хотя ещё шёл в 10:00.
     params = {"from": "2026-10-23T10:00:00Z", "to": "2026-10-23T12:00:00Z"}
-    assert ids_of(client.get(URL, params=params)) == [
-        journal["ongoing"],
-        journal["inside"],
-        journal["cross"],
-    ]
-    # Только from: всё, что закончилось после 12:00 или ещё идёт.
-    assert ids_of(client.get(URL, params={"from": "2026-10-23T12:00:00Z"})) == [
-        journal["late"],
-        journal["ongoing"],
-    ]
+    assert ids_of(client.get(URL, params=params)) == [journal["ongoing"], journal["inside"]]
+    # Только from: всё, что началось с 12:00.
+    assert ids_of(client.get(URL, params={"from": "2026-10-23T12:00:00Z"})) == [journal["late"]]
     # Только to: всё, что началось до 09:00. Время без пояса — это UTC.
     assert ids_of(client.get(URL, params={"to": "2026-10-23T09:00:00"})) == [journal["early"]]
 
@@ -90,7 +84,7 @@ def test_combined_filters(client, journal):
         "from": "2026-10-23T09:00:00Z",
         "to": "2026-10-23T12:00:00Z",
     }
-    assert ids_of(client.get(URL, params=params)) == [journal["cross"]]
+    assert ids_of(client.get(URL, params=params)) == [journal["cross"]]  # началось в 09:50
 
 
 def test_pagination(client, journal):

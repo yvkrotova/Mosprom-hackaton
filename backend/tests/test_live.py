@@ -140,7 +140,9 @@ def test_frontend_is_served(settings):
 
 def _check_frontend(client):
     r = client.get("/")
-    assert r.status_code == 200 and "LinQ Safety" in r.text
+    assert r.status_code == 200 and "LinQ Видеоконтроль" in r.text
+    font = client.get("/fonts/inter-cyrillic-wght-normal.woff2")
+    assert "font/woff2" in font.headers["content-type"]
     assert "javascript" in client.get("/js/app.js").headers["content-type"]
     # API и его единый формат ошибок фронтенд не перекрывает.
     r = client.get("/api/v1/nope")

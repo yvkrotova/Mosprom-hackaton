@@ -11,6 +11,39 @@ from app.pipeline.interfaces import Frame, FrameSource
 logger = logging.getLogger(__name__)
 
 
+def analysis_frame_indices(native_fps: float, frame_count: int, analysis_fps: float) -> list[int]:
+    """Какие кадры файла выберет VideoFileSource при данном analysis_fps (та же арифметика).
+    Нужно, чтобы до старта проверить, что предзаписанные детекции есть для всех этих кадров."""
+    step = 1.0 / analysis_fps
+    next_ts, out = 0.0, []
+    for idx in range(frame_count):
+        video_ts = idx / native_fps
+        if video_ts + 1e-3 < next_ts:
+            continue
+        out.append(idx)
+        next_ts += step
+        while next_ts <= video_ts:
+            next_ts += step
+    return out
+
+
+def probe_video(uri: str) -> dict[str, float | int | None]:
+    """FPS, размер и число кадров из контейнера (для сверки с метаданными записи)."""
+    cap = cv2.VideoCapture(uri)
+    try:
+        if not cap.isOpened():
+            raise FrameSourceError(f"Не удалось открыть видео: {uri}")
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        return {
+            "fps": fps if fps and 0 < fps <= 1000 else None,
+            "width": int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or None,
+            "height": int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or None,
+            "frame_count": int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or None,
+        }
+    finally:
+        cap.release()
+
+
 class FrameSourceError(RuntimeError):
     """Источник недоступен: файл не открылся или поток оборвался."""
 

@@ -26,13 +26,14 @@ def get_stats(
     from_: Annotated[datetime | None, Query(alias="from")] = None,
     to: datetime | None = None,
     source_id: Annotated[str | None, Query(description="Только одна камера")] = None,
+    site: Annotated[str | None, Query(description="Только камеры участка")] = None,
 ) -> StatsOut:
     from_, to = as_utc(from_), as_utc(to)  # время без пояса — UTC
     if from_ and to and from_ > to:
         raise UnprocessableError(
             "Параметр from позже to", **{"from": from_.isoformat(), "to": to.isoformat()}
         )
-    return stats_service.get_stats(db, from_, to, source_id)
+    return stats_service.get_stats(db, from_, to, source_id, site)
 
 
 @router.get(
@@ -40,8 +41,8 @@ def get_stats(
     response_model=MetricsOut,
     summary="FPS, время инференса, задержки обнаружения и оповещения",
 )
-def get_metrics(db: DbSession, source_id: str | None = None) -> MetricsOut:
-    return stats_service.get_metrics(db, source_id)
+def get_metrics(db: DbSession, settings: SettingsDep, source_id: str | None = None) -> MetricsOut:
+    return stats_service.get_metrics(db, source_id, settings.heartbeat_interval_s)
 
 
 @router.get("/health", response_model=HealthOut, summary="Состояние БД и источников")

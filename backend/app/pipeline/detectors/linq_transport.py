@@ -115,7 +115,7 @@ class LinqTransport:
                 if not np.isfinite(result).all():
                     raise ValueError("LinQ: выход содержит NaN/Inf")
                 device_s = worker.get("inference_time")
-                if isinstance(device_s, (int, float)) and np.isfinite(device_s) and device_s >= 0:
+                if isinstance(device_s, int | float) and np.isfinite(device_s) and device_s >= 0:
                     self.device_ms = device_s * 1000
                 return result
             raise TimeoutError(f"LinQ: нет ответа за {self.settings.linq_timeout_s} секунд")

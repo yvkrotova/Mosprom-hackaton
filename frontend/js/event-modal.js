@@ -1,38 +1,26 @@
-// Карточка события: доказательства (с увеличением), времена эпизода, модель, действия оператора, история.
-// Открытая карточка обновляется сама, когда по WebSocket приходят изменения этого эпизода.
+// Подробности эпизода: видео эпизода (исходный файл с перемоткой на начало) или кадр с пояснением,
+// все поля, комментарий и явные действия проверки. Открытие отмечает событие просмотренным, но не
+// подтверждает его. Открытая карточка обновляется сама по WebSocket.
 import { api } from "./api.js";
 import { mediaUrl } from "./config.js";
 import { icon } from "./icons.js";
-import { emit, on, setOperator, state } from "./state.js";
+import { emit, on, refreshUnviewed, sourceById, state } from "./state.js";
 import {
-  $, $$, canDo, episodeSeconds, esc, fmtDateTime, fmtDuration, fmtNum, detailItems, label, openModal, violatorText, toast, toastError,
+  $, $$, canDo, detailItems, episodeSeconds, esc, fmtDateTime, fmtDuration, fmtNum, label, openModal,
+  reviewPill, scenarioIcon, statePill, toast, toastError, violatorText,
 } from "./util.js";
-
-export const reviewBadge = (status) => {
-  const cls = { unreviewed: "badge-amber", confirmed: "badge-red", false_positive: "badge-gray", escalated: "badge-purple" }[status];
-  return `<span class="badge ${cls}">${esc(label("review", status))}</span>`;
-};
-
-export const stateBadge = (ev) =>
-  ev.state === "active"
-    ? `<span class="badge badge-red">● ${esc(label("state", "active"))}</span>`
-    : `<span class="badge badge-gray">${esc(label("state", "ended"))}</span>`;
-
-export const priorityBadge = (p) => {
-  const cls = { low: "badge-gray", medium: "badge-blue", high: "badge-amber", critical: "badge-red" }[p];
-  return `<span class="badge ${cls}">${esc(label("priority", p))}</span>`;
-};
 
 const ACTION_DONE = {
   confirm: "Нарушение подтверждено", mark_false: "Отмечено как ложное срабатывание", escalate: "Передано мастеру смены",
   reset: "Проверка сброшена", comment: "Комментарий добавлен",
 };
 
-// Действие оператора из любого места интерфейса. Возвращает обновлённое событие.
-export async function act(eventId, action, comment, author = state.operator) {
+// Действие оператора (автор — имя из меню пользователя). Возвращает обновлённое событие.
+export async function act(eventId, action, comment) {
   try {
-    const ev = await api.action(eventId, { action, comment: comment || undefined, author });
+    const ev = await api.action(eventId, { action, comment: comment || undefined, author: state.operator });
     emit("event", ev);
+    refreshUnviewed();
     toast(ACTION_DONE[action] || "Сохранено", "success", { timeout: 2500 });
     return ev;
   } catch (err) {
@@ -41,10 +29,64 @@ export async function act(eventId, action, comment, author = state.operator) {
   }
 }
 
-// Полноэкранный просмотр кадра.
-function openZoom(url) {
-  const { root } = openModal(`<img class="zoom-img" src="${esc(url)}" alt="Кадр-доказательство" />`, { wide: true });
-  root.classList.add("modal-zoom");
+function media(ev) {
+  const range = `${fmtNum(ev.video_ts_start, 1)}–${fmtNum(ev.video_ts_end, 1)} с видео`;
+  if (ev.video_url) {
+    return `<video controls preload="metadata" src="${esc(mediaUrl(ev.video_url))}" data-start="${ev.video_ts_start}"></video>
+      <div class="media-note">Эпизод: ${range}. Видео открыто на начале эпизода; это исходная запись камеры, не отдельный клип.</div>`;
+  }
+  const frame = ev.thumbnail_url
+    ? `<img src="${esc(mediaUrl(ev.thumbnail_url))}" alt="Кадр нарушения" />`
+    : `<div class="empty" style="background:#050b1c;border-radius:12px">${icon("film")}<b>Кадр недоступен</b></div>`;
+  return `${frame}<div class="media-note">${esc(ev.video_note || "Видео эпизода недоступно")}. Эпизод: ${range}.</div>`;
+}
+
+function body(ev, draft) {
+  const src = sourceById(ev.source_id);
+  const duration = ev.state === "active"
+    ? `${fmtDuration(episodeSeconds(ev))} (продолжается)` : fmtDuration(episodeSeconds(ev));
+  const details = detailItems(ev).map((d) => `<dt>${esc(d.title)}</dt><dd>${esc(
+    [ev.state === "active" && d.now != null ? `сейчас ${d.now}` : null, d.max != null ? `максимум ${d.max}` : d.now]
+      .filter(Boolean).join(" · "))}</dd>`).join("");
+  const btn = (action, text, cls = "") => (canDo(action, ev.review_status)
+    ? `<button class="btn ${cls}" data-act="${action}">${text}</button>` : "");
+  const history = (ev.actions || []).map((a) => `<div class="history-item"><b>${esc(a.author)}</b> · ${fmtDateTime(a.created_at)}<br>
+    ${esc(label("action", a.action))}${a.prev_status !== a.new_status ? ` (${esc(label("review", a.prev_status))} → ${esc(label("review", a.new_status))})` : ""}
+    ${a.comment ? `<div class="muted">«${esc(a.comment)}»</div>` : ""}</div>`).join("");
+  return `
+    <h3 class="modal-title">${icon(scenarioIcon(ev.scenario_type))}${esc(label("scenario", ev.scenario_type))}</h3>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin:-4px 0 16px">${statePill(ev.state, "pill-sm")}${reviewPill(ev.review_status, "pill-sm")}
+      <span class="pill pill-gray pill-sm">Приоритет: ${esc(label("priority", ev.priority))}</span></div>
+    <div class="episode">
+      <div class="episode-media">${media(ev)}</div>
+      <div>
+        <dl class="kv">
+          <dt>Камера</dt><dd>${esc(ev.source_name || "удалённая камера")}</dd>
+          <dt>Участок</dt><dd>${esc(ev.source_site || src?.site || "—")}</dd>
+          <dt>Зона</dt><dd>${esc(ev.zone_name || (ev.zone_id ? "удалённая зона" : "Весь кадр"))}</dd>
+          <dt>Нарушитель</dt><dd>${esc(violatorText(ev))}</dd>
+          <dt>Начало</dt><dd>${fmtDateTime(ev.started_at)}</dd>
+          <dt>Окончание</dt><dd>${ev.state === "active" ? "продолжается" : fmtDateTime(ev.ended_at)}</dd>
+          <dt>Длительность</dt><dd data-duration>${duration}</dd>
+          <dt>На видео</dt><dd>${fmtNum(ev.video_ts_start, 1)}–${fmtNum(ev.video_ts_end, 1)} с</dd>
+          <dt>Уверенность</dt><dd>${Math.round(ev.confidence * 100)}% (максимум за эпизод)</dd>
+          ${details}
+          <dt>Подтверждено за</dt><dd>${fmtNum(ev.video_ts_detected - ev.video_ts_start, 1)} с видео</dd>
+          <dt>Модель</dt><dd class="mono">${esc(ev.model_version)}</dd>
+          <dt>Версия правила</dt><dd>${ev.rule_version ?? "—"}</dd>
+        </dl>
+        <div class="review-actions">
+          ${btn("confirm", `${icon("check")}Подтвердить нарушение`, "btn-confirm")}
+          ${btn("mark_false", `${icon("x")}Ложное срабатывание`)}
+          ${btn("escalate", `${icon("arrow-up")}Передать мастеру`)}
+          ${btn("reset", `${icon("undo")}Сбросить проверку`, "btn-ghost")}
+        </div>
+        <label class="field" style="margin-top:14px"><span>Комментарий</span>
+          <textarea class="input" rows="2" maxlength="2000" data-comment placeholder="Что увидел оператор">${esc(draft)}</textarea></label>
+        <div style="display:flex;justify-content:flex-end;margin-top:8px"><button class="btn btn-sm" data-act="comment">${icon("message")}Сохранить комментарий</button></div>
+        <div class="history"><b>История проверки</b>${history || `<span class="muted">Оператор ещё не реагировал</span>`}</div>
+      </div>
+    </div>`;
 }
 
 export async function openEvent(eventId) {
@@ -55,114 +97,63 @@ export async function openEvent(eventId) {
     return toastError(err);
   }
   let unsubscribe = () => {};
-  const { root, close } = openModal(`<div data-body></div>`, { wide: true, onClose: () => unsubscribe() });
-  const body = $("[data-body]", root);
-  let showKind = "frame_annotated";
-
+  let timer = null;
+  const { root } = openModal(`<div data-body></div>`, {
+    wide: true,
+    onClose: () => { unsubscribe(); clearInterval(timer); },
+  });
+  const host = $("[data-body]", root);
   const render = () => {
-    // Черновик комментария и автор переживают перерисовку от WebSocket.
-    const draft = $("textarea", body)?.value ?? "";
-    const author = $("[name=author]", body)?.value ?? state.operator;
-    const evidence = ev.evidence.find((e) => e.kind === showKind) || ev.evidence[0];
-    const kinds = [...new Set(ev.evidence.map((e) => e.kind))];
-    const realDelay = (new Date(ev.detected_at) - new Date(ev.started_at)) / 1000;
-    const notifyMs = ev.notified_at ? new Date(ev.notified_at) - new Date(ev.detected_at) : null;
-    const duration = ev.state === "active"
-      ? `${fmtDuration((Date.now() - new Date(ev.started_at)) / 1000)} и продолжается`
-      : fmtDuration(episodeSeconds(ev));
-    body.innerHTML = `
-      <div class="card-head" style="padding-right:36px">
-        <div>
-          <h3 class="modal-title" style="margin:0">${esc(label("scenario", ev.scenario_type))}</h3>
-          <p class="card-sub">${esc(ev.source_name || "Источник удалён")} • ${esc(ev.zone_name || "без зоны")} • ${fmtDateTime(ev.started_at)}</p>
-        </div>
-        <div style="display:flex;gap:6px;flex-wrap:wrap">${stateBadge(ev)}${reviewBadge(ev.review_status)}${priorityBadge(ev.priority)}</div>
-      </div>
-      <div class="ev-grid">
-        <div>
-          ${evidence
-            ? `<button class="ev-img-btn" data-zoom title="Увеличить"><img class="ev-img" src="${esc(mediaUrl(evidence.url))}" alt="Кадр-доказательство" />
-                 <span class="ev-zoom-hint">${icon("zoom-in")}Увеличить</span></button>`
-            : `<div class="ev-img empty" style="display:grid;place-items:center">${icon("film")}<div>Кадр ещё загружается…</div></div>`}
-          <div class="ev-img-tabs">${kinds.map((k) => `<button class="btn btn-sm ${k === (evidence?.kind) ? "btn-primary" : ""}" data-kind="${k}">
-              ${k === "frame_annotated" ? "С разметкой" : k === "frame_raw" ? "Исходный кадр" : "Клип"}</button>`).join("")}
-            ${evidence ? `<a class="btn btn-sm btn-ghost" href="${esc(mediaUrl(evidence.url))}" target="_blank" rel="noopener">${icon("download")}Открыть файл</a>` : ""}
-          </div>
-          ${evidence?.video_ts != null ? `<div class="faint" style="font-size:12px;margin-top:6px">Кадр на ${fmtNum(evidence.video_ts, 1)} с видео${evidence.frame_time ? ` · ${fmtDateTime(evidence.frame_time)}` : ""}</div>` : ""}
-        </div>
-        <div style="display:flex;flex-direction:column;gap:16px">
-          <dl class="kv">
-            <dt>Камера</dt><dd>${esc(ev.source_name || "—")}</dd>
-            <dt>Зона</dt><dd>${esc(ev.zone_name || "—")}</dd>
-            <dt>Начало</dt><dd class="mono">${fmtDateTime(ev.started_at)}</dd>
-            <dt>Последнее наблюдение</dt><dd class="mono">${fmtDateTime(ev.last_seen_at)}</dd>
-            <dt>Окончание</dt><dd class="mono">${ev.ended_at ? fmtDateTime(ev.ended_at) : `<span class="badge badge-red">● идёт</span>`}</dd>
-            <dt>Длительность</dt><dd class="mono">${duration}</dd>
-            <dt>На видео</dt><dd class="mono">${fmtNum(ev.video_ts_start, 1)}–${fmtNum(ev.video_ts_end, 1)} с</dd>
-            <dt>Уверенность</dt><dd class="mono">${Math.round(ev.confidence * 100)}% (макс. за эпизод) · ${violatorText(ev)}</dd>
-            ${detailItems(ev).map((d) => `<dt>${esc(d.title)}</dt><dd class="mono">${ev.state === "active" && d.now != null ? `сейчас ${esc(d.now)}` : ""}${ev.state === "active" && d.now != null && d.max != null ? " · " : ""}${d.max != null ? `макс ${esc(d.max)}` : ev.state === "active" ? "" : esc(d.now ?? "")}</dd>`).join("")}
-            <dt>Подтверждено за</dt><dd class="mono">${fmtNum(ev.video_ts_detected - ev.video_ts_start, 2)} с видео · ${fmtNum(realDelay, 2)} с реально</dd>
-            <dt>Оповещение</dt><dd class="mono">${notifyMs == null ? "—" : fmtNum(notifyMs, 0) + " мс после подтверждения"}</dd>
-            <dt>Модель</dt><dd class="mono">${esc(ev.model_version)}</dd>
-            <dt>Версия правила</dt><dd class="mono">${ev.rule_version != null ? `v${ev.rule_version}` : "—"}</dd>
-          </dl>
-          <div>
-            <div class="ev-actions">
-              <button class="btn btn-success" data-act="confirm" ${canDo("confirm", ev.review_status) ? "" : "disabled"}>${icon("check")}Подтвердить</button>
-              <button class="btn" data-act="mark_false" ${canDo("mark_false", ev.review_status) ? "" : "disabled"}>${icon("x")}Ложное срабатывание</button>
-              <button class="btn" data-act="escalate" ${canDo("escalate", ev.review_status) ? "" : "disabled"}>${icon("arrow-up")}Передать мастеру</button>
-              <button class="btn btn-ghost" data-act="reset" ${canDo("reset", ev.review_status) ? "" : "disabled"}>${icon("undo")}Сбросить</button>
-            </div>
-            <textarea class="input" rows="2" placeholder="Комментарий: что сделано, кто уведомлён…" style="margin-top:10px;resize:vertical">${esc(draft)}</textarea>
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;gap:8px">
-              <label class="field" style="flex:1;flex-direction:row;align-items:center;gap:6px">${icon("user")}
-                <input class="input" name="author" value="${esc(author)}" maxlength="200" placeholder="Фамилия И.О." aria-label="Автор" /></label>
-              <button class="btn btn-sm" data-act="comment">${icon("message")}Комментировать</button>
-            </div>
-          </div>
-          <div>
-            <h4 class="muted" style="margin:0 0 8px;font-size:12px;text-transform:uppercase;letter-spacing:.06em">История действий оператора</h4>
-            ${ev.actions.length ? `<ul class="timeline">${ev.actions.slice().reverse().map((a) => `
-              <li><div class="t-when">${fmtDateTime(a.created_at)} · ${esc(a.author)}</div>
-                <div><b>${esc(label("action", a.action))}</b>${a.prev_status !== a.new_status ? ` <span class="muted">${esc(label("review", a.prev_status))} → ${esc(label("review", a.new_status))}</span>` : ""}</div>
-                ${a.comment ? `<div class="muted">«${esc(a.comment)}»</div>` : ""}</li>`).join("")}</ul>`
-              : `<div class="muted" style="font-size:13px">Оператор ещё не реагировал</div>`}
-          </div>
-        </div>
-      </div>`;
-
-    $("[data-zoom]", body)?.addEventListener("click", () => openZoom(mediaUrl(evidence.url)));
-    for (const btn of $$("[data-kind]", body)) btn.onclick = () => { showKind = btn.dataset.kind; render(); };
-    for (const btn of $$("[data-act]", body)) {
-      btn.onclick = async () => {
-        const comment = $("textarea", body).value.trim();
-        const who = $("[name=author]", body).value.trim();
-        if (!who) return toast("Укажите автора действия", "info", { timeout: 2500 });
-        if (btn.dataset.act === "comment" && !comment) return toast("Введите текст комментария", "info", { timeout: 2500 });
-        if (who !== state.operator) setOperator(who);
-        btn.disabled = true;
-        const updated = await act(ev.id, btn.dataset.act, comment, who);
+    const draft = $("[data-comment]", host)?.value || "";
+    const video = $("video", host);
+    const playing = video && !video.paused ? video.currentTime : null;
+    host.innerHTML = body(ev, draft);
+    const v = $("video", host);
+    if (v) {
+      v.addEventListener("loadedmetadata", () => { v.currentTime = playing ?? Number(v.dataset.start); }, { once: true });
+      // Браузер не играет формат файла (например, AVI) — показываем кадр нарушения с пояснением.
+      v.addEventListener("error", () => {
+        const box = v.parentElement;
+        box.innerHTML = `${ev.thumbnail_url ? `<img src="${esc(mediaUrl(ev.thumbnail_url))}" alt="Кадр нарушения" />` : ""}
+          <div class="media-note">Видео не воспроизводится в браузере (формат файла не поддерживается) — показан кадр нарушения.
+          Эпизод: ${fmtNum(ev.video_ts_start, 1)}–${fmtNum(ev.video_ts_end, 1)} с видео.</div>`;
+      }, { once: true });
+    }
+    for (const b of $$("[data-act]", host)) {
+      b.onclick = async () => {
+        const action = b.dataset.act;
+        const comment = $("[data-comment]", host).value.trim();
+        if (action === "comment" && !comment) return toast("Введите комментарий", "info", { timeout: 2500 });
+        b.disabled = true;
+        const updated = await act(ev.id, action, comment);
         if (updated) {
           ev = updated;
-          $("textarea", body).value = "";
+          $("[data-comment]", host).value = "";
+          render();
+        } else {
+          b.disabled = false;
         }
-        render();
       };
     }
   };
-
-  // Изменения эпизода по WebSocket (продолжение, кадры, завершение, действия с другого места).
-  let refetch = null;
-  unsubscribe = on("event", (data) => {
-    if (data.id !== ev.id) return;
-    ev = { ...ev, ...data, actions: data.actions || ev.actions };
-    render();
-    clearTimeout(refetch);
-    refetch = setTimeout(async () => {
-      try { ev = await api.event(ev.id); render(); } catch { /* останется то, что пришло по WS */ }
-    }, 500);
-  });
-
   render();
-  return { close };
+  unsubscribe = on("event", (changed) => {
+    if (changed.id !== ev.id) return;
+    ev = { ...ev, ...changed, actions: changed.actions || ev.actions };
+    render();
+  });
+  // Длительность идущего эпизода обновляется на глазах.
+  timer = setInterval(() => {
+    if (ev.state !== "active") return;
+    const el = $("[data-duration]", host);
+    if (el) el.textContent = `${fmtDuration(episodeSeconds(ev))} (продолжается)`;
+  }, 1000);
+  if (!ev.viewed_at) {
+    try {
+      const viewed = await api.viewEvent(ev.id);
+      ev = { ...ev, viewed_at: viewed.viewed_at };
+      emit("event", viewed);
+      refreshUnviewed();
+    } catch { /* отметка просмотра не мешает работе с карточкой */ }
+  }
 }

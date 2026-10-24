@@ -6,6 +6,8 @@ from typing import Annotated, Any, Generic, TypeVar
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 
+from app.pipeline.geometry import polygon_problems
+
 
 def _check_uuid(value: str) -> str:
     try:
@@ -37,13 +39,10 @@ def _check_bbox(bbox: tuple[float, float, float, float]) -> tuple[float, float, 
 
 
 def _check_polygon(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
-    # Формула площади Гаусса: отсекаем вырожденные полигоны (все точки на одной прямой).
-    area2 = sum(
-        x1 * y2 - x2 * y1
-        for (x1, y1), (x2, y2) in zip(points, points[1:] + points[:1], strict=True)
-    )
-    if abs(area2) / 2 < 1e-6:
-        raise ValueError("полигон вырожден (нулевая площадь)")
+    # Общая проверка контура (та же — во фронте): 3 разные точки, площадь, самопересечения.
+    problems = polygon_problems(points)
+    if problems:
+        raise ValueError("; ".join(problems))
     return points
 
 

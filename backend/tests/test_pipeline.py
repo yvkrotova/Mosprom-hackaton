@@ -12,7 +12,7 @@ from app.pipeline.detectors import build_detector
 from app.pipeline.detectors.linq import LinqDetector
 from app.pipeline.detectors.mock import DURATION_S, MockDetector
 from app.pipeline.detectors.onnx import ModelFileError
-from app.pipeline.detectors.replay import ReplayDetector, ReplayFileError
+from app.pipeline.detectors.replay import ReplayDetector, ReplayFileError, ReplayMissingFrame
 from app.pipeline.interfaces import (
     Detection,
     Detector,
@@ -191,15 +191,17 @@ def test_replay_matches_mock():
 
     assert len(replay_sink.episodes()) == 2
     assert summary(replay_sink.episodes()) == summary(mock_sink.episodes())
-    assert detector.model_version == "mock-1.0"
+    # Старый формат (v1) читается только с явной пометкой.
+    assert detector.model_version == "mock-1.0 (v1, без метаданных)"
 
 
 def test_replay_lookup_and_errors(tmp_path: Path):
     detector = ReplayDetector(SAMPLE_PATH, analysis_fps=FPS)
-    frame = Frame("s", 0, 5.02, 1280, 720)  # ближайшая запись 5.0 — в допуске 0.05
-    assert detector.infer(frame).detections and detector.infer(frame).video_ts == 5.02
-    # Кадры дальше конца файла — пустые детекции, а не ошибка.
-    assert detector.infer(Frame("s", 0, 400.0, 1280, 720)).detections == []
+    frame = Frame("s", 50, 5.0, 1280, 720)  # запись выбирается по frame_idx, не по времени
+    assert detector.infer(frame).detections and detector.infer(frame).video_ts == 5.0
+    # Кадра дальше конца записи нет — это ошибка, а не «людей нет».
+    with pytest.raises(ReplayMissingFrame, match="закончилась раньше видео"):
+        detector.infer(Frame("s", 4000, 400.0, 1280, 720))
 
     bad = tmp_path / "bad.jsonl"
     bad.write_text(

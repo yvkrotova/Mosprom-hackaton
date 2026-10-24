@@ -20,11 +20,23 @@ REPORTS = Path(__file__).resolve().parent / "reports"
 
 
 def load(path: Path) -> dict[int, dict]:
-    out = {}
+    """frame_idx -> запись с рамками в долях 0..1. Понимает v1 (доли) и v2 (заголовок, пиксели)."""
+    out, size = {}, None
     for line in path.read_text(encoding="utf-8").splitlines():
-        if line.strip():
-            rec = json.loads(line)
-            out[rec["frame_idx"]] = rec
+        if not line.strip():
+            continue
+        rec = json.loads(line)
+        if rec.get("type") == "header":
+            size = (rec["video"]["width"], rec["video"]["height"])
+            continue
+        if rec.get("type"):
+            continue  # сводка
+        if size:
+            w, h = size
+            for det in rec["detections"]:
+                x1, y1, x2, y2 = det["bbox"]
+                det["bbox"] = [x1 / w, y1 / h, x2 / w, y2 / h]
+        out[rec["frame_idx"]] = rec
     return out
 
 

@@ -80,6 +80,7 @@ class BlockedExitRule(ScenarioRule):
     ParamsModel = BlockedExitParams
     title = "Заблокированный проход"
     icon = "blocked"
+    color = "#f5b13d"
     details_fields = {"blocked_pct": ("Занято зоны", "%"), "obstacles": ("Предметов", "")}
     description = (
         "Тревога, если в проходе (зоне) появился и лежит посторонний неподвижный предмет. "

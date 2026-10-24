@@ -89,17 +89,13 @@ class WorkerManager:
         return cmd
 
     def _env(self) -> dict[str, str]:
+        # Воркер получает ровно те же настройки, что backend (детектор, replay, LinQ, трекер),
+        # а не перечитывает .env сам: иначе backend и воркер могут разойтись.
         env = os.environ.copy()
-        env.update(
-            {
-                "INTERNAL_TOKEN": self.settings.internal_token,
-                "BACKEND_URL": self.settings.backend_url,
-                "REPLAY_PATH": self.settings.replay_path,
-                "LOG_LEVEL": self.settings.log_level,
-                "PYTHONIOENCODING": "utf-8",
-                "PYTHONUTF8": "1",
-            }
-        )
+        for name, value in self.settings.model_dump().items():
+            if value is not None:
+                env[name.upper()] = str(value)
+        env.update({"PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"})
         return env
 
     def start(self, session: Session, source: Source, *, realtime: bool | None = None) -> None:
@@ -136,8 +132,9 @@ class WorkerManager:
             self._workers[source.id] = worker
         logger.info("Воркер источника %s запущен, pid=%s, лог %s", source.id, process.pid, log_path)
 
-        # Отсчёт таймаута heartbeat — с момента запуска.
+        # Отсчёт таймаута heartbeat — с момента запуска; к запуску относятся замеры /metrics.
         source.last_heartbeat_at = utcnow()
+        source.run_started_at = source.last_heartbeat_at
         set_source_status(session, self.hub, source, SourceStatus.RUNNING, None)
         threading.Thread(
             target=self._monitor, args=(source.id, worker), name=f"monitor-{source.id[:8]}",

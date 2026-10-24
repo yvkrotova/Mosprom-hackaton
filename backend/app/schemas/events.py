@@ -2,7 +2,7 @@
 
 from typing import Any, Self
 
-from pydantic import Field, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from app.schemas.common import ApiModel, BBox, InputModel, Page, UtcDatetime
 from app.schemas.enums import (
@@ -76,6 +76,16 @@ class EventOut(ApiModel):
         description="Данные сценария. run_fast_movement: speed, speed_max — «ростов в секунду»",
     )
     thumbnail_url: str | None = Field(description="URL аннотированного кадра, если есть")
+    source_site: str | None = Field(None, description="Участок камеры")
+    viewed_at: UtcDatetime | None = Field(
+        None, description="Когда оператор открыл событие («Просмотрено»); не связано с проверкой"
+    )
+    video_url: str | None = Field(
+        None,
+        description="Исходное видео источника-файла (/media/…); эпизод — video_ts_start..end. "
+        "null — видео нет (поток или файл недоступен), см. video_note",
+    )
+    video_note: str | None = Field(None, description="Почему видео эпизода недоступно")
     evidence: list[EvidenceOut]
     created_at: UtcDatetime
     updated_at: UtcDatetime
@@ -86,6 +96,16 @@ class EventDetail(EventOut):
 
 
 EventPage = Page[EventOut]
+
+
+class SourceCount(BaseModel):
+    source_id: str
+    count: int
+
+
+class UnviewedCounts(BaseModel):
+    total: int
+    by_source: list[SourceCount]
 
 
 class OperatorActionCreate(InputModel):

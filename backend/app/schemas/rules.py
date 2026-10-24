@@ -64,6 +64,7 @@ class ScenarioInfo(ApiModel):
         False, description="Нужен анализ сцены (эталон «пустой зоны» в редакторе зон)"
     )
     icon: str = Field("alert-triangle", description="Имя иконки во фронте")
+    color: str = Field("#2b67ff", description="Цвет зоны с этим назначением в интерфейсе")
     details_fields: list[DetailField] = Field(
         default_factory=list, description="Что показывать из details в карточке события"
     )

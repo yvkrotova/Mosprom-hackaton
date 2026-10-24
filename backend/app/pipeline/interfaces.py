@@ -190,6 +190,8 @@ class FrameSource(ABC):
 class Detector(ABC):
     kind: ClassVar[str]  # "mock" | "replay" | "linq"
     model_version: str
+    # True — inference_ms берётся из записи (replay), а не меряется этим процессом.
+    recorded_timings: ClassVar[bool] = False
 
     @abstractmethod
     def infer(self, frame: Frame) -> FrameDetections:
@@ -218,6 +220,7 @@ class ScenarioRule(ABC):
     title: ClassVar[str]
     description: ClassVar[str]
     icon: ClassVar[str] = "alert-triangle"  # имя иконки во фронте (frontend/js/icons.js)
+    color: ClassVar[str] = "#2b67ff"  # цвет зоны с этим назначением в интерфейсе
     # Поля RuleHit.extra["details"] для карточки события: ключ -> (подпись, единица). Фронт
     # показывает их одинаково для всех сценариев (значение и максимум за эпизод, ключ_max).
     details_fields: ClassVar[dict[str, tuple[str, str]]] = {}

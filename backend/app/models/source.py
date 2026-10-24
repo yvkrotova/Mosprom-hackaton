@@ -25,6 +25,14 @@ class Source(IdMixin, TimestampMixin, Base):
     # Сценарии, правила по умолчанию для которых уже создавались (ensure_default_rules). Удалённое
     # или выключенное пользователем автоправило по этому списку заново не создаётся.
     defaults_applied: Mapped[list[str] | None] = mapped_column(JSON, default=list)
+    # Предзаписанные детекции (replay) этого источника: путь к JSONL на сервере. Пусто — ищется
+    # в REPLAY_DIR по SHA-256 видео, затем REPLAY_PATH (см. replay_service).
+    replay_path: Mapped[str | None] = mapped_column(Text)
+    # SHA-256 видеофайла (кеш) и «отпечаток» файла (размер:mtime), при котором он посчитан.
+    video_sha256: Mapped[str | None] = mapped_column(String(64))
+    video_fingerprint: Mapped[str | None] = mapped_column(String(64))
+    # Начало последнего запуска анализа — к нему относятся замеры и задержки в /metrics.
+    run_started_at: Mapped[datetime | None] = mapped_column(UtcDateTime)
 
     zones: Mapped[list["Zone"]] = relationship(
         back_populates="source", cascade="all, delete-orphan", passive_deletes=True

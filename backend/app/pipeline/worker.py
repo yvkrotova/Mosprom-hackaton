@@ -14,13 +14,19 @@ import cv2
 import numpy as np
 
 from app.config import Settings
+from app.pipeline.annotate import annotate_frame
 from app.pipeline.backend_client import BackendClient
 from app.pipeline.detectors import build_detector, detector_kind_for
 from app.pipeline.detectors.replay import ReplayDetector
 from app.pipeline.interfaces import Detector, Frame, FrameSource
 from app.pipeline.live import LiveSender, frame_meta
 from app.pipeline.runner import FrameResult, Pipeline, PipelineStats
-from app.pipeline.sources import NullFrameSource, VideoFileSource
+from app.pipeline.sources import (
+    NullFrameSource,
+    VideoFileSource,
+    analysis_frame_indices,
+    probe_video,
+)
 from app.schemas.enums import SourceKind
 from app.schemas.internal import SourceConfig
 
@@ -35,10 +41,11 @@ def build_frame_source(config: SourceConfig, detector: Detector, realtime: bool)
     src = config.source
     if src.kind == SourceKind.IMAGES:
         raise ValueError("Источники kind=images пока не поддерживаются")
-    if isinstance(detector, ReplayDetector) and not Path(src.uri).exists():
-        # Replay без видео: кадры без картинки на всю длину файла детекций.
+    if isinstance(detector, ReplayDetector) and detector.legacy and not Path(src.uri).exists():
+        # Старая запись (v1) без видео: кадры без картинки на всю длину файла детекций.
         logger.warning("Видео %s не найдено — replay без кадров-доказательств", src.uri)
-        return NullFrameSource(src.id, detector.records[-1].video_ts, src.analysis_fps)
+        last_ts = detector.read_record(detector.last_frame_idx)["video_ts"]
+        return NullFrameSource(src.id, last_ts, src.analysis_fps)
     return VideoFileSource(
         src.id,
         src.uri,
@@ -46,6 +53,44 @@ def build_frame_source(config: SourceConfig, detector: Detector, realtime: bool)
         is_stream=src.kind == SourceKind.RTSP,
         realtime=realtime,
     )
+
+
+def make_detector(config: SourceConfig, settings: Settings, detector_kind: str) -> Detector:
+    """Источник с привязанной записью — ReplayDetector (с проверкой соответствия видео и
+    расписания кадров); иначе детектор из настройки DETECTOR."""
+    src = config.source
+    if config.replay is None:
+        if detector_kind == "replay":
+            raise ValueError(
+                "DETECTOR=replay, но для источника не найдена запись детекций: "
+                + (config.replay_note or "задайте replay_path источника")
+            )
+        return build_detector(
+            detector_kind,
+            settings,
+            zone_polygon=config.zones[0].polygon if config.zones else None,
+            analysis_fps=src.analysis_fps,
+        )
+    detector = ReplayDetector(
+        config.replay.path, src.analysis_fps, on_missing=settings.replay_on_missing
+    )
+    try:
+        if not detector.legacy:
+            if not Path(src.uri).is_file():
+                raise ValueError(f"Видео источника не найдено: {src.uri}")
+            info = probe_video(src.uri)
+            detector.verify_video(sha256=config.replay.video_sha256, **info)
+            if info["fps"] and info["frame_count"]:
+                detector.check_schedule(
+                    analysis_frame_indices(info["fps"], info["frame_count"], src.analysis_fps)
+                )
+    except Exception:
+        detector.close()
+        raise
+    logger.info(
+        "Replay: %s (%s), источник записи — %s", detector.path, detector.kind, config.replay.origin
+    )
+    return detector
 
 
 class HeartbeatThread(threading.Thread):
@@ -137,6 +182,7 @@ def run_worker(
         "model_version": None,
         # До создания детектора — по настройке; потом — Detector.kind (onnx -> onnx_cpu).
         "detector_kind": detector_kind_for(detector_kind),
+        "replay_file": None,
     }
 
     def send_heartbeat(status: str, error: str | None) -> None:
@@ -150,6 +196,16 @@ def run_worker(
             "preprocess_ms_avg": stats.preprocess_ms_avg if stats else None,
             "postprocess_ms_avg": stats.postprocess_ms_avg if stats else None,
             "scene_ms_avg": stats.scene_ms_avg if stats else None,
+            "frame_ms_avg": stats.frame_ms_avg if stats else None,
+            "frames_unanalyzed": stats.frames_unanalyzed
+            if stats and stats.recorded_timings
+            else None,
+            "replay_file": state["replay_file"],
+            **(
+                {f"recorded_inference_ms_{k}": v for k, v in stats.recorded_inference().items()}
+                if stats and stats.recorded_timings
+                else {}
+            ),
             "frames_processed": stats.frames_processed if stats else 0,
             "model_version": state["model_version"],
             "detector_kind": state["detector_kind"],
@@ -179,19 +235,18 @@ def run_worker(
     watcher: ConfigWatcher | None = None
     status, error, code = "stopped", None, EXIT_OK
     try:
-        detector = build_detector(
-            detector_kind,
-            settings,
-            zone_polygon=config.zones[0].polygon if config.zones else None,
-            analysis_fps=config.source.analysis_fps,
-        )
+        detector = make_detector(config, settings, detector_kind)
         state["model_version"] = detector.model_version
         state["detector_kind"] = detector.kind
+        if isinstance(detector, ReplayDetector):
+            state["replay_file"] = detector.path.name
         frames = build_frame_source(config, detector, realtime)
         pipeline = Pipeline(
             config,
             detector,
             client,
+            # Replay: повторный прогон той же записи даёт те же event_id (журнал без дублей).
+            event_id_seed=detector.jsonl_sha256 if isinstance(detector, ReplayDetector) else None,
             tracker_config=settings.tracker_config,
             scene_hz=settings.scene_analysis_hz,
             scene_bootstrap_s=settings.scene_bootstrap_s,
@@ -212,7 +267,19 @@ def run_worker(
 
         def on_frame(frame: Frame, result: FrameResult) -> None:
             meta = frame_meta(frame, result, pipeline.stats.fps, detector.kind)
-            live.submit(meta, frame.image)
+
+            annotated = annotate_frame(
+                image=frame.image,
+                width=frame.width,
+                height=frame.height,
+                zones=config.zones,
+                tracks=result.tracks,
+                violator_track_id=None,
+                violation_zone_id=None,
+                caption_lines=[],
+            )
+
+            live.submit(meta, annotated)
 
         pipeline.run(frames, should_stop=stop_event.is_set, on_frame=on_frame)
         logger.info(

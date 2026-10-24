@@ -22,7 +22,85 @@ FrameSource ──Frame──▶ Detector ──FrameDetections──▶ Tracker
 Детектор отвечает только за «что и где на кадре». Решение «это нарушение», подтверждение по времени,
 подавление повторов и тревоги делает конвейер.
 
-## Формат `FrameDetections`
+## Replay v2: предзаписанные результаты LinQ (основной формат)
+
+Модель выполняется на LinQ TPU в Jupyter организаторов скриптом `linq/run_linq_detections.py`
+(notebook `linq/notebooks/run_linq_detections.ipynb`), результат — JSONL schema v2. Backend проигрывает
+его `ReplayDetector`'ом: трекер, правила и эпизоды работают как с живым детектором.
+Формат читает и пишет один модуль `app/pipeline/detectors/replay_format.py` (без зависимостей от
+backend — его загружают в Jupyter вместе со скриптом).
+
+**Файл.** Первая строка — заголовок с метаданными запуска, затем по строке на обработанный кадр
+(включая пустые), последней — сводка (если прогон завершён). Время кадра — секунды от начала видео
+(float); все длительности — миллисекунды. Рамки — `[x1, y1, x2, y2]` в **пикселях исходного кадра**
+(ReplayDetector сам переводит их в доли 0..1). `track_id` в записи детектора запрещён.
+
+Заголовок (одна строка; здесь — с переносами):
+```json
+{"type": "header", "schema_version": 2,
+ "video": {"file_name": "0_te1.mp4", "sha256": "9f2c…", "fps": 24.83, "width": 1920, "height": 1080,
+           "frame_count_declared": 372},
+ "step": 1,
+ "model": {"name": "yolov8s.tpu", "path": "/auto/cache/<логин>/yolov8s.tpu", "sha256": "…",
+           "version": "yolov8s-linq:yolov8s.tpu"},
+ "preprocess": {"input_size": 640, "letterbox": true, "pad_value": 114, "color": "RGB",
+                "layout": "NCHW float32 0..1"},
+ "postprocess": {"conf_threshold": 0.1, "iou_threshold": 0.45, "nms": "по классам",
+                 "classes": ["person"], "max_det": 300, "bbox": "пиксели исходного кадра [x1, y1, x2, y2]"},
+ "runtime": {"name": "LinQ TPU (удалённый сервис, RabbitMQ)", "protocol": "…", "packages": {…},
+             "device": null, "device_ms_definition": "inference_time из ответа воркера LinQ (если есть), мс"},
+ "detector_kind": "linq_tpu", "source_id": null, "started_at_utc": "2026-10-24T12:00:00+00:00",
+ "inference_ms_definition": "вызов runtime LinQ с ожиданием результата (…)",
+ "frame_ms_definition": "чтение кадра + preprocess + runtime + postprocess, мс"}
+```
+Кадр:
+```json
+{"frame_idx": 12, "video_ts": 0.483, "inference_ms": 41.2, "preprocess_ms": 3.1,
+ "postprocess_ms": 1.4, "frame_ms": 52.7, "device_ms": null,
+ "detections": [{"label": "person", "confidence": 0.87, "bbox": [812.4, 301.0, 905.9, 640.2]}]}
+```
+Сводка: `{"type": "summary", "frames_written", "frame_count_read", "warmup_runs_excluded",
+"inference_ms": {"count", "avg", "p50", "p95"}, "frame_ms": {…}, "device_ms": {…}, "duration_s",
+"finished_at_utc"}`. Warm-up не пишется в файл и не входит в статистику.
+
+**Сопоставление.** Запись выбирается по `frame_idx` исходного видео через индекс смещений
+`<файл>.idx.json` (строится при первом открытии, внутри — SHA-256 JSONL; файл изменился — индекс
+перестраивается; файл в память целиком не читается). Если запись сделана с шагом `step` > 1, кадры
+анализа (по `analysis_fps` источника) должны быть подмножеством записанных — иначе ошибка при старте.
+
+**Три случая:**
+| Ситуация | Что происходит |
+|---|---|
+| строка есть, `detections: []` | кадр обработан, людей нет |
+| строки для кадра нет | `REPLAY_ON_MISSING=error` (по умолчанию) — ошибка источника с текстом; `unknown` — кадр «не проанализирован»: трекер не обновляется, правила не вызываются, зоны — «оценить нельзя» с причиной, эпизоды не завершаются явно (только по `gap_tolerance_s`) |
+| запись закончилась раньше видео | то же, текст «запись закончилась раньше видео: последний кадр N» |
+
+**Проверки при старте** (ошибка источника с перечнем различий): SHA-256 видео (считается при загрузке
+и кешируется у источника), FPS, разрешение, число кадров — против заголовка; при чтении — повреждённый
+JSON (с номером строки), повтор `frame_idx`, рамка вне кадра или `x2 < x1`, неизвестная версия схемы,
+`track_id`, отсутствующий файл.
+
+**Привязка к источнику** (у каждого источника — своя пара видео + JSONL): поле `replay_path` источника
+(файл при загрузке видео — поле `replay` формы, `POST /sources/{id}/replay`, `PATCH replay_path`) →
+`REPLAY_DIR` (поиск `*.jsonl` по SHA-256 видео в заголовке) → `REPLAY_PATH` (один файл, с
+предупреждением в логе). Источник с записью анализируется ReplayDetector'ом независимо от `DETECTOR`.
+
+**Повторный прогон без дублей:** `event_id = uuid5(NS, "source_id|sha256 JSONL|scenario|rule_id|zone_id|track_id|frame_idx начала")`,
+NS = `6f1c2b9e-4d0a-5b7e-9a51-2c7d3e8f4a10`. Каждый запуск — новый процесс воркера: свежие детектор,
+трекер, правила и EpisodeManager; трекер детерминирован, поэтому эпизоды совпадают, а backend не
+меняет уже завершённое событие при повторе известного отрезка (`outcome: unchanged`, тревога не
+повторяется). Перемотки нет.
+
+**Метрики.** Искусственной задержки по записанному `inference_ms` нет. `detector_kind` —
+`<из заголовка>_replay` (например `linq_tpu_replay`). В heartbeat и `/metrics` записанное время идёт
+отдельно: `recorded_inference_ms_avg/p50/p95` (историческое время на LinQ), а `inference_ms_*` = null;
+`fps` и `frame_ms_avg` — текущая скорость воспроизведения (чтение записи + трекер + правила), это не
+скорость LinQ.
+
+Старый формат (v1, `FrameDetections` с рамками в долях, без заголовка — раздел ниже) читается только с
+пометкой «v1, без метаданных» в `model_version`; сверить его с видео нельзя.
+
+## Формат `FrameDetections` (v1, устаревший для replay)
 
 Pydantic-модель: `app/schemas/cv.py`. Один объект на кадр; в JSONL — одна строка на кадр.
 

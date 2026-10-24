@@ -5,6 +5,7 @@
 
 import asyncio
 import logging
+import mimetypes
 import secrets
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -19,12 +20,16 @@ from app.config import Settings, get_settings
 from app.db import make_engine, make_session_factory, run_migrations
 from app.errors import install_error_handlers
 from app.schemas.common import ErrorResponse
-from app.services import source_service
+from app.services import event_service, source_service
 from app.services.live_hub import LiveHub
 from app.services.notifier import WsHub
 from app.services.worker_manager import WorkerManager
 
 logger = logging.getLogger(__name__)
+
+# Windows часто не знает шрифт woff2 и видео mp4 — без типа браузер может их не принять.
+mimetypes.add_type("font/woff2", ".woff2")
+mimetypes.add_type("video/mp4", ".mp4")
 
 
 async def _heartbeat_watchdog(app: FastAPI) -> None:
@@ -102,6 +107,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(internal.router)
     app.include_router(ws.router)
     app.mount("/media", StaticFiles(directory=settings.storage_dir), name="media")
+    event_service.configure_media(settings.storage_dir)
     # Фронтенд на корне сайта — последним, чтобы не перекрывать API.
     frontend = settings.frontend_dir
     if frontend and (frontend / "index.html").is_file():

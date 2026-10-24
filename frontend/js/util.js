@@ -1,4 +1,4 @@
-// Общие помощники: экранирование, форматирование, подписи enum'ов, тосты, модальные окна.
+// Общие помощники: экранирование, форматирование, подписи, плашки статусов, тосты, окна, меню.
 import { icon } from "./icons.js";
 
 export const $ = (sel, root = document) => root.querySelector(sel);
@@ -18,24 +18,35 @@ export function h(html) {
 
 export const LABELS = {
   scenario: {}, // заполняется из GET /scenarios (setScenarios) — сценарии во фронте не перечисляются
-  state: { active: "Идёт", ended: "Завершено" },
+  state: { active: "Продолжается", ended: "Завершён" },
   review: { unreviewed: "Не проверено", confirmed: "Подтверждено", false_positive: "Ложное", escalated: "Передано мастеру" },
   priority: { low: "Низкий", medium: "Средний", high: "Высокий", critical: "Критический" },
-  status: { idle: "Не запускался", running: "Анализ идёт", stopped: "Остановлен", error: "Ошибка", disconnected: "Нет связи" },
-  action: { confirm: "Подтвердил", mark_false: "Отметил ложным", escalate: "Передал мастеру", comment: "Комментарий", reset: "Сбросил проверку" },
-  detector: {
-    mock: "MOCK · заглушка", replay: "REPLAY · файл детекций",
-    onnx_cpu: "ONNX · CPU (не LinQ)", onnx: "ONNX · CPU (не LinQ)",
-    linq: "LinQ TPU", linq_tpu: "LinQ TPU", linq_tpu_replay: "LinQ TPU (запись)", onnx_cpu_replay: "CPU (запись)",
-  },
+  status: { idle: "Не запускалась", running: "Подключена", stopped: "Остановлена", error: "Ошибка", disconnected: "Нет связи" },
+  action: { confirm: "Подтвердил нарушение", mark_false: "Отметил ложным", escalate: "Передал мастеру", comment: "Комментарий", reset: "Сбросил проверку" },
 };
 
 export const label = (group, key) => LABELS[group]?.[key] ?? key ?? "—";
 
-// Инференс на ускорителе — detector_kind linq / linq_tpu / linq_tpu_replay (запись с TPU). Остальное — явно «не LinQ».
-export const isLinq = (kind) => typeof kind === "string" && kind.startsWith("linq");
+// Плашки — не кнопки: точка + текст (статус различается текстом, а не только цветом).
+const REVIEW_PILL = { unreviewed: "pill-amber", confirmed: "pill-green", escalated: "pill-green", false_positive: "pill-gray" };
+export const reviewPill = (status, cls = "") => `<span class="pill ${REVIEW_PILL[status] || "pill-gray"} ${cls}">${esc(label("review", status))}</span>`;
+export const statePill = (st, cls = "") => `<span class="pill ${st === "active" ? "pill-red" : "pill-blue"} ${cls}">${esc(label("state", st))}</span>`;
 
-// Справочник сценариев из GET /scenarios: подписи, иконки, формы параметров.
+// Среда выполнения по фактическому detector_kind. Replay (…_replay) — предзаписанные результаты.
+export const isLinq = (kind) => typeof kind === "string" && kind.startsWith("linq");
+export const isReplay = (kind) => typeof kind === "string" && kind.endsWith("_replay");
+export function envLabel(kind) {
+  if (!kind) return { text: "Среда неизвестна", cls: "" };
+  if (isReplay(kind) && isLinq(kind)) return { text: "Replay — предзаписанные результаты LinQ", cls: "replay" };
+  if (isReplay(kind)) return { text: `Replay — запись (${kind.replace(/_replay$/, "")}, не LinQ)`, cls: "replay" };
+  if (isLinq(kind)) return { text: "LinQ TPU", cls: "ok" };
+  if (kind === "onnx_cpu" || kind === "onnx") return { text: "ONNX · CPU (не LinQ)", cls: "" };
+  if (kind === "mock") return { text: "Заглушка (mock) · не LinQ", cls: "" };
+  return { text: `${kind} · не LinQ`, cls: "" };
+}
+
+// --- Сценарии (справочник из GET /scenarios) ------------------------------------------------
+
 const SCENARIOS = new Map();
 export function setScenarios(list) {
   SCENARIOS.clear();
@@ -64,12 +75,8 @@ export function detailItems(ev) {
     });
 }
 
-// Коротко для строки журнала и ленты: «Скорость макс 2,4 роста/с · Предметов 1».
-export const detailsShort = (ev) =>
-  detailItems(ev).map((d) => `${d.title} ${d.max != null && d.max !== d.now ? "макс " + d.max : d.now ?? d.max}`).join(" · ");
-
 // Кто нарушил: трек человека или зона целиком (track_id = null — например, предмет в проходе).
-export const violatorText = (ev) => (ev.track_id == null ? "нарушение зоны" : `трек #${ev.track_id}`);
+export const violatorText = (ev) => (ev.track_id == null ? "нарушение зоны (без привязки к человеку)" : `трек #${ev.track_id}`);
 
 // Та же таблица переходов, что в backend (docs/CONTRACT.md).
 export const TRANSITIONS = {
@@ -89,12 +96,17 @@ export function fmtTime(iso) {
   const d = new Date(iso);
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
-
-export function fmtDateTime(iso) {
+export function fmtHM(iso) {
   if (!iso) return "—";
   const d = new Date(iso);
-  return `${pad(d.getDate())}.${pad(d.getMonth() + 1)}.${d.getFullYear()} ${fmtTime(iso)}`;
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
+export function fmtDate(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return `${pad(d.getDate())}.${pad(d.getMonth() + 1)}.${d.getFullYear()}`;
+}
+export const fmtDateTime = (iso) => (iso ? `${fmtDate(iso)} ${fmtTime(iso)}` : "—");
 
 export function fmtDuration(seconds) {
   if (seconds == null || Number.isNaN(seconds)) return "—";
@@ -110,8 +122,28 @@ export function fmtNum(value, digits = 1, suffix = "") {
 
 export const pct = (value) => (value == null ? "—" : `${Math.round(value * 100)}%`);
 
-// Длительность эпизода: по таймлайну видео (не зависит от скорости обработки).
+// Длительность эпизода: по таймлайну видео; у идущего — до последнего наблюдения.
 export const episodeSeconds = (ev) => ev.video_ts_end - ev.video_ts_start;
+
+// <input type="datetime-local"> ↔ ISO (местное время браузера).
+export function toLocalInput(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+export function fromLocalInput(value) {
+  if (!value) return "";
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+}
+
+// «24 события», «1 событие», «5 событий».
+export function plural(n, one, few, many) {
+  const m10 = n % 10, m100 = n % 100;
+  if (m10 === 1 && m100 !== 11) return one;
+  if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return few;
+  return many;
+}
 
 // --- Локальные настройки (переживают перезагрузку страницы) --------------------------------
 
@@ -196,3 +228,37 @@ export function confirmModal(title, text, { okLabel = "Удалить", danger =
     $("[data-cancel]", root).onclick = close;
   });
 }
+
+// Выпадающее меню у кнопки: items = [{ label, icon, run }]. Закрывается кликом мимо и Escape.
+export function openMenu(anchor, items) {
+  document.querySelector(".dropdown")?.remove();
+  const menu = h(`<div class="dropdown" role="menu">${items.map((it, i) =>
+    `<button role="menuitem" data-i="${i}">${it.icon ? icon(it.icon) : ""}${esc(it.label)}</button>`).join("")}</div>`);
+  document.body.append(menu);
+  const r = anchor.getBoundingClientRect();
+  const left = Math.min(r.right - menu.offsetWidth, window.innerWidth - menu.offsetWidth - 8);
+  menu.style.left = `${Math.max(8, left)}px`;
+  menu.style.top = `${Math.min(r.bottom + 6, window.innerHeight - menu.offsetHeight - 8)}px`;
+  const close = () => { menu.remove(); document.removeEventListener("mousedown", outside, true); document.removeEventListener("keydown", key); };
+  const outside = (e) => { if (!menu.contains(e.target) && e.target !== anchor) close(); };
+  const key = (e) => e.key === "Escape" && close();
+  for (const btn of $$("button", menu)) btn.onclick = (e) => { e.stopPropagation(); close(); items[Number(btn.dataset.i)].run(); };
+  setTimeout(() => { document.addEventListener("mousedown", outside, true); document.addEventListener("keydown", key); });
+}
+
+// Подсказка «?»: title не показывается мгновенно и плохо читается — свой всплывающий текст.
+export function helpIcon(text) {
+  return `<span class="help" tabindex="0" data-tip="${esc(text)}" aria-label="${esc(text)}">${icon("help-circle")}</span>`;
+}
+let tipEl = null;
+document.addEventListener("mouseover", (e) => {
+  const target = e.target.closest?.("[data-tip]");
+  if (!target) { tipEl?.remove(); tipEl = null; return; }
+  if (tipEl?.dataset.for === target.dataset.tip) return;
+  tipEl?.remove();
+  tipEl = h(`<div class="tooltip-tip" data-for="${esc(target.dataset.tip)}">${esc(target.dataset.tip)}</div>`);
+  document.body.append(tipEl);
+  const r = target.getBoundingClientRect();
+  tipEl.style.left = `${Math.min(r.left, window.innerWidth - tipEl.offsetWidth - 10)}px`;
+  tipEl.style.top = `${r.bottom + 8 + tipEl.offsetHeight > window.innerHeight ? r.top - tipEl.offsetHeight - 8 : r.bottom + 8}px`;
+});

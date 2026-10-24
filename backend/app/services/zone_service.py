@@ -45,7 +45,7 @@ def update_zone(session: Session, zone_id: str, body: ZoneUpdate) -> Zone:
 def delete_zone(session: Session, zone_id: str, settings: Settings | None = None) -> None:
     zone = get_zone(session, zone_id)
     if settings is not None:
-        _remove_reference_file(settings, zone)
+        remove_reference_file(settings, zone)
     session.delete(zone)  # правила зоны удаляет ON DELETE CASCADE
     session.commit()
 
@@ -53,7 +53,7 @@ def delete_zone(session: Session, zone_id: str, settings: Settings | None = None
 # --- Эталон пустого прохода -------------------------------------------------------------------
 
 
-def _remove_reference_file(settings: Settings, zone: Zone) -> None:
+def remove_reference_file(settings: Settings, zone: Zone) -> None:
     if zone.reference_path:
         (settings.storage_dir / zone.reference_path).unlink(missing_ok=True)
 
@@ -74,7 +74,7 @@ def set_reference(session: Session, settings: Settings, zone_id: str) -> Zone:
 
 def clear_reference(session: Session, settings: Settings, zone_id: str) -> Zone:
     zone = get_zone(session, zone_id)
-    _remove_reference_file(settings, zone)
+    remove_reference_file(settings, zone)
     zone.reference_path = None
     session.commit()
     return zone

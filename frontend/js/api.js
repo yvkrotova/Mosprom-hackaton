@@ -37,11 +37,11 @@ async function request(method, path, { json, query, form } = {}) {
   return body;
 }
 
-// Загрузка видео через XHR — ради индикатора прогресса.
-function uploadWithProgress(form, onProgress) {
+// Загрузка файла через XHR — ради индикатора прогресса.
+function uploadWithProgress(form, onProgress, path = "/sources/upload") {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open("POST", API_BASE + "/api/v1/sources/upload");
+    xhr.open("POST", API_BASE + "/api/v1" + path);
     xhr.upload.onprogress = (e) => e.lengthComputable && onProgress?.(e.loaded / e.total);
     xhr.onload = () => {
       let body = null;
@@ -60,12 +60,14 @@ export const api = {
 
   sources: () => request("GET", "/sources"),
   createSource: (body) => request("POST", "/sources", { json: body }),
-  uploadSource: uploadWithProgress,
+  uploadSource: (form, onProgress) => uploadWithProgress(form, onProgress),
+  uploadReplay: (id, form, onProgress) => uploadWithProgress(form, onProgress, `/sources/${id}/replay`),
   updateSource: (id, body) => request("PATCH", `/sources/${id}`, { json: body }),
   deleteSource: (id) => request("DELETE", `/sources/${id}`),
   startSource: (id, realtime) => request("POST", `/sources/${id}/start`, { query: { realtime } }),
   stopSource: (id) => request("POST", `/sources/${id}/stop`),
   previewUrl: (id) => `${API_BASE}/api/v1/sources/${id}/preview?t=${Date.now()}`,
+  saveLayout: (id, body) => request("PUT", `/sources/${id}/layout`, { json: body }),
 
   zones: (sourceId) => request("GET", `/sources/${sourceId}/zones`),
   createZone: (sourceId, body) => request("POST", `/sources/${sourceId}/zones`, { json: body }),
@@ -81,7 +83,21 @@ export const api = {
 
   events: (query) => request("GET", "/events", { query }),
   event: (id) => request("GET", `/events/${id}`),
+  viewEvent: (id) => request("POST", `/events/${id}/view`),
+  unviewed: (site) => request("GET", "/events/unviewed", { query: { site } }),
   action: (id, body) => request("POST", `/events/${id}/actions`, { json: body }),
+  // Серверная выгрузка всей выборки (не страницы). Возвращает Blob.
+  exportCsv: async (query) => {
+    const url = new URL(API_BASE + "/api/v1/events/export.csv", location.href);
+    for (const [k, v] of Object.entries(query || {})) if (v !== undefined && v !== null && v !== "") url.searchParams.set(k, v);
+    let resp;
+    try { resp = await fetch(url); } catch { throw new ApiError(0, "NETWORK", "Нет связи с backend. Он запущен?"); }
+    if (!resp.ok) {
+      const body = await resp.json().catch(() => null);
+      throw new ApiError(resp.status, body?.error?.code || "HTTP", body?.error?.message || "Выгрузка не удалась");
+    }
+    return resp.blob();
+  },
 
   stats: (query) => request("GET", "/stats", { query }),
   metrics: (sourceId) => request("GET", "/metrics", { query: { source_id: sourceId } }),

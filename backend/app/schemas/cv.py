@@ -45,3 +45,7 @@ class FrameDetections(BaseModel):
         description="Чем посчитано: onnx_cpu, linq_tpu… Replay файла linq_tpu — запись с LinQ",
     )
     detections: list[Detection] = Field(default_factory=list)
+    # False — кадр не проанализирован (например, в предзаписанном файле нет такого кадра):
+    # правила и эпизоды трактуют его как «оценить нельзя», а не «людей нет».
+    analyzed: bool = True
+    unanalyzed_reason: str | None = None

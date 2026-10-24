@@ -26,6 +26,7 @@ def scenario_infos() -> list[ScenarioInfo]:
             auto_enable=cls.auto_enable,
             requires_scene_analysis=cls.requires_scene_analysis,
             icon=cls.icon,
+            color=cls.color,
             details_fields=[
                 {"key": k, "title": t, "unit": u} for k, (t, u) in cls.details_fields.items()
             ],
