@@ -1,6 +1,6 @@
 """Журнал событий: эпизоды нарушений, доказательства, действия оператора."""
 
-from typing import Self
+from typing import Any, Self
 
 from pydantic import Field, model_validator
 
@@ -71,6 +71,10 @@ class EventOut(ApiModel):
     rule_id: str | None
     rule_version: int | None
     description: str | None
+    details: dict[str, Any] | None = Field(
+        None,
+        description="Данные сценария. run_fast_movement: speed, speed_max — «ростов в секунду»",
+    )
     thumbnail_url: str | None = Field(description="URL аннотированного кадра, если есть")
     evidence: list[EvidenceOut]
     created_at: UtcDatetime

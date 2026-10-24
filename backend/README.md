@@ -19,7 +19,7 @@ Backend веб-приложения видеоконтроля промышле�
 | Требование кейса | Где |
 |---|---|
 | Приём данных | Загрузка видеофайла (`POST /sources/upload`), источник по пути или `rtsp://` (`POST /sources`) |
-| Распознавание нарушений | Конвейер `Detector → Tracker → сценарии → EpisodeManager`; детектор выбирается через `DETECTOR=mock\|replay\|onnx\|linq`; `onnx` — настоящая YOLOv8s на CPU |
+| Распознавание нарушений | Конвейер `Detector → Tracker (ByteTrack) → сценарии → EpisodeManager`; сценарии `danger_zone` и `run_fast_movement` (бег / резкое перемещение); детектор выбирается через `DETECTOR=mock\|replay\|onnx\|linq`; `onnx` — настоящая YOLOv8s на CPU |
 | Оперативное оповещение | WebSocket `/ws/events`: `event.created` с кадром, камерой, зоной, временем и типом нарушения |
 | Подавление повторов | Нарушение подтверждается `confirm_window_s`; потеря короче `gap_tolerance_s` не завершает эпизод; одна тревога на эпизод |
 | Журнал с фильтрами | `GET /events`: тип, камера, зона, интервал времени, статус, приоритет; карточка события и действия оператора |
@@ -31,7 +31,7 @@ Backend веб-приложения видеоконтроля промышле�
 **Ограничения:**
 - **Нейросеть пока на CPU, не на LinQ.** `DETECTOR=onnx` запускает YOLOv8s (COCO) через onnxruntime на процессоре компьютера (~70 мс/кадр на ноутбуке). В `/health`, `/metrics` и в интерфейсе это видно как `onnx_cpu` с пометкой «не LinQ».
 - **`LinqDetector` — заглушка вызова ускорителя.** Пре- и постпроцессинг общие с `OnnxDetector` и готовы; вызов Python API LinQ (`_run`) и квантование/деквантование помечены `TODO(CV)`: сигнатуры берутся из `usage_example_python_api.zip` организаторов.
-- **Сценарии.** Реализован `danger_zone`. `fall_immobility` есть в enum и как рабочий пример в шаблоне, но не зарегистрирован.
+- **Сценарии.** Реализованы `danger_zone` и `run_fast_movement`. Скорость бега — в «ростах человека в секунду», не в м/с; порог 1.5 подтверждён частично (docs/BENCHMARKS.md). `fall_immobility` есть в enum и как рабочий пример в шаблоне, но не зарегистрирован.
 - **Источники.** `kind=images` пока не запускается. RTSP открывается через OpenCV, но на живой камере не проверялся.
 - **Клипы.** Видеофрагменты (`EvidenceKind.clip`) пока не создаются — только кадры `frame_raw` и `frame_annotated`.
 - **Без авторизации.** Публичный API без логина; внутренний API воркера защищён токеном.
@@ -72,7 +72,8 @@ app/
   services/      события, кадры, источники, правила, статистика, WS-хаб, WorkerManager
   pipeline/      interfaces, sources, detectors/, tracker, scenarios/, episodes, annotate,
                  runner (Pipeline), worker, backend_client
-workers/run_pipeline.py    tools/ (seed, validate_detections, make_demo_video, export_detections, benchmark_detector)
+workers/run_pipeline.py    tools/ (seed, validate_detections, make_demo_video, export_detections, benchmark_detector,
+                                  video_inventory, track_videos, dump_track_speeds, evaluate_episodes)
 models/                    веса YOLOv8s (не в git)
 alembic/                   tests/ (+ fixtures/)    docs/
 ```
@@ -140,10 +141,16 @@ curl http://localhost:8000/api/v1/events
 | `BACKEND_URL` | `http://localhost:8000` | Адрес backend для воркера |
 | `CORS_ORIGINS` | `http://localhost:5173` | Адреса фронтенда через запятую |
 | `DETECTOR` | `mock` | `mock` \| `replay` \| `onnx` (YOLOv8s на CPU, не LinQ) \| `linq` |
+| `MOCK_SCENARIO` | `danger_zone` | Сцена заглушки: `danger_zone` или `run_fast_movement` (ходьба, бег, перекрытие, скачок рамки) |
 | `REPLAY_PATH` | пусто | JSONL-файл детекций для `replay` |
 | `MODEL_PATH` | `./models/yolov8s.onnx` | Модель для `onnx` (относительно `backend/`) |
 | `MODEL_INPUT_SIZE` | `640` | Сторона входа сети, если в модели не задана |
-| `CONF_THRESHOLD`, `IOU_THRESHOLD` | `0.35`, `0.45` | Порог уверенности и порог IoU для NMS |
+| `DETECTOR_CONF_THRESHOLD`, `IOU_THRESHOLD` | `0.1`, `0.45` | Порог уверенности детектора (низкий — для ByteTrack; старое имя `CONF_THRESHOLD` тоже читается) и IoU для NMS |
+| `TRACKER` | `bytetrack` | `bytetrack` \| `iou` |
+| `TRACK_HIGH_THRESH`, `TRACK_LOW_THRESH` | `0.5`, `0.1` | Уверенные / слабые детекции для двух этапов ByteTrack |
+| `TRACK_MATCH_THRESH` | `0.8` | Максимальная стоимость 1 − IoU·уверенность |
+| `TRACK_BUFFER_S`, `TRACK_MIN_HITS` | `2.0`, `3` | Сколько секунд держать пропавший трек; попаданий до подтверждения |
+| `TRACKS_PUSH_HZ` | `8` | Не чаще стольких снимков живого просмотра в секунду |
 | `DETECT_CLASSES` | `person` | Классы COCO через запятую (`person,car,truck`) |
 | `REALTIME_PLAYBACK` | `false` | Анализ файла в реальном темпе (для демо) |
 | `HEARTBEAT_INTERVAL_S` | `2` | Период heartbeat воркера |
@@ -234,6 +241,19 @@ python tools/benchmark_detector.py [video.mp4] --frames 200 --out bench.json   #
 python tools/export_detections.py video.mp4 -o dets.jsonl                      # JSONL для replay / сравнения с LinQ
 ```
 Нет файла модели → воркер честно уходит в `error` с текстом «Файл модели не найден…», источник красный в интерфейсе.
+
+## Проверка на тестовых видео
+
+Ролики — `data/videos/` и `data/storage/videos/0_te*.mp4` (в git не хранятся), их описание —
+`data/videos/manifest.json`, черновик разметки — `data/videos/labels.json`. Результаты — `docs/BENCHMARKS.md`.
+```bash
+python tools/video_inventory.py                      # параметры роликов, контактные листы previews/
+python tools/track_videos.py --render                # IoU против ByteTrack, MP4 с треками в rendered/
+python tools/dump_track_speeds.py --video kth_running --out data/videos/speeds/kth.csv   # калибровка бега
+python tools/evaluate_episodes.py                    # TP/FP/FN по эпизодам против labels.json
+python tools/seed.py --videos                        # 4 источника с зонами и правилами для демо
+```
+Детекции кэшируются в `data/videos/cache/` (первый прогон ONNX ~10 с на ролик).
 
 ## Подключение модели (для CV-участника)
 

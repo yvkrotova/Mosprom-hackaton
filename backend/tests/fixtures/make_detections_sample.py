@@ -24,7 +24,7 @@ def make_detections_sample(path: Path = SAMPLE_PATH) -> Path:
         for frame in frames:
             record = detector.infer(frame)
             # source_id в файле не нужен: конвейер подставит свой.
-            skip = {"source_id", "preprocess_ms", "postprocess_ms"}
+            skip = {"source_id", "preprocess_ms", "postprocess_ms", "detector_kind", "device_ms"}
             out.write(record.model_dump_json(exclude=skip) + "\n")
     return path
 

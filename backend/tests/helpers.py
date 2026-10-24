@@ -16,8 +16,9 @@ def make_config(
     zone_rule: bool = True,
     update_interval_s: float = 1.0,
     source_id: str | None = None,
+    scenario_type: str = "danger_zone",
 ) -> SourceConfig:
-    """Источник с зонами и одним правилом danger_zone (на первую зону или на все)."""
+    """Источник с зонами и одним правилом сценария (на первую зону или без зоны)."""
     source_id = source_id or str(uuid.uuid4())
     zone_objs = [
         {
@@ -34,7 +35,7 @@ def make_config(
         "id": str(uuid.uuid4()),
         "source_id": source_id,
         "zone_id": zone_objs[0]["id"] if zone_rule else None,
-        "scenario_type": "danger_zone",
+        "scenario_type": scenario_type,
         "enabled": True,
         "priority": "high",
         "params": params or {},

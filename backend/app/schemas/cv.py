@@ -34,5 +34,14 @@ class FrameDetections(BaseModel):
     inference_ms: float = Field(ge=0, description="Чистое время инференса кадра, мс")
     preprocess_ms: float | None = Field(None, ge=0, description="Подготовка входа сети, мс")
     postprocess_ms: float | None = Field(None, ge=0, description="Декодирование выхода и NMS, мс")
+    device_ms: float | None = Field(
+        None,
+        ge=0,
+        description="Время на самом ускорителе, если API его отдаёт (сеть = inference − device)",
+    )
     model_version: str = Field(min_length=1, examples=["yolov8n-linq-int8-2026.10"])
+    detector_kind: str | None = Field(
+        None,
+        description="Чем посчитано: onnx_cpu, linq_tpu… Replay файла linq_tpu — запись с LinQ",
+    )
     detections: list[Detection] = Field(default_factory=list)

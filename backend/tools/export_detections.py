@@ -47,7 +47,7 @@ def main() -> int:
                         help="Частота анализа, кадр/с (как analysis_fps источника)")  # fmt: skip
     parser.add_argument("--detector", default="onnx", choices=DETECTOR_CHOICES)
     parser.add_argument("--model", help="MODEL_PATH")
-    parser.add_argument("--conf", type=float, help="CONF_THRESHOLD")
+    parser.add_argument("--conf", type=float, help="DETECTOR_CONF_THRESHOLD")
     parser.add_argument("--iou", type=float, help="IOU_THRESHOLD")
     parser.add_argument("--classes", help="DETECT_CLASSES, через запятую")
     parser.add_argument("--max-frames", type=int)
@@ -56,7 +56,7 @@ def main() -> int:
     if not args.video.is_file():
         print(f"Видео не найдено: {args.video}")
         return 1
-    overrides = {"model_path": args.model, "conf_threshold": args.conf,
+    overrides = {"model_path": args.model, "detector_conf_threshold": args.conf,
                  "iou_threshold": args.iou, "detect_classes": args.classes}  # fmt: skip
     settings = settings.model_copy(update={k: v for k, v in overrides.items() if v is not None})
     detector = build_detector(args.detector, settings, analysis_fps=args.fps)

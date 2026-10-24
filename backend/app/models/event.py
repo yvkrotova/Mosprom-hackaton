@@ -44,6 +44,8 @@ class Event(IdMixin, TimestampMixin, Base):
     rule_id: Mapped[str | None] = mapped_column(String(36))
     rule_version: Mapped[int | None] = mapped_column(Integer)
     description: Mapped[str | None] = mapped_column(Text)
+    # Данные сценария: например {"speed": 2.1, "speed_max": 2.6} у run_fast_movement.
+    details: Mapped[dict[str, Any] | None] = mapped_column(JSON)
 
     evidence: Mapped[list["Evidence"]] = relationship(
         back_populates="event",

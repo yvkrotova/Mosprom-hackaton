@@ -1,6 +1,6 @@
 """Внутренний API между воркером конвейера и backend (заголовок X-Internal-Token)."""
 
-from typing import Literal, Self
+from typing import Any, Literal, Self
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -34,6 +34,7 @@ class EventUpsert(InputModel):
     rule_id: UuidStr | None
     rule_version: int | None
     description: str | None = None
+    details: dict[str, Any] | None = None
 
     @model_validator(mode="after")
     def _check_consistency(self) -> Self:

@@ -63,7 +63,7 @@ class OnnxDetector(Detector):
         custom = meta.custom_metadata_map or {}
         self.names = parse_names(custom.get("names")) or {0: "person"}
         self.class_ids = resolve_class_ids(settings.detect_class_list, self.names)
-        self.conf_threshold = settings.conf_threshold
+        self.conf_threshold = settings.detector_conf_threshold
         self.iou_threshold = settings.iou_threshold
         version = custom.get("version")
         self.model_version = f"{path.stem}-onnx{'-ultralytics' + version if version else ''}"

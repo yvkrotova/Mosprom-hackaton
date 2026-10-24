@@ -1,0 +1,24 @@
+{
+  "note": "ЧЕРНОВИК разметки истины (draft=true). Составлен по контактным листам и траекториям детектора, видео целиком не просмотрено. Проверка и исправление — docs/VIDEO_LABELING.md. Время — секунды видео (video_ts). danger_zone — относительно зон из manifest.json.",
+  "videos": {
+    "te1": [
+      {"scenario_type": "danger_zone", "zone": "Проход у пресса", "start_s": 11.2, "end_s": 15.0, "draft": true,
+       "comment": "человек, идущий к камере, заходит ногами в зону примерно на 11 с и остаётся до конца ролика"}
+    ],
+    "te21": [
+      {"scenario_type": "danger_zone", "zone": "Проход у станка", "start_s": 1.0, "end_s": 3.6, "draft": true,
+       "comment": "человек проходит зону, уходя от камеры; второй человек у правого края в зону не заходит"}
+    ],
+    "accident": [
+      {"scenario_type": "danger_zone", "zone": "Проход между стеллажами", "start_s": 14.8, "end_s": 16.4, "draft": true,
+       "uncertain": true,
+       "comment": "мелкая фигура в проходе перед обрушением; НЕ уверен, что это человек — проверьте по видео"}
+    ],
+    "kth_running": [
+      {"scenario_type": "run_fast_movement", "start_s": 0.4, "end_s": 1.6, "draft": true, "comment": "пробежка справа налево"},
+      {"scenario_type": "run_fast_movement", "start_s": 4.4, "end_s": 5.6, "draft": true, "comment": "пробежка слева направо"},
+      {"scenario_type": "run_fast_movement", "start_s": 7.6, "end_s": 8.8, "draft": true, "comment": "пробежка справа налево"},
+      {"scenario_type": "run_fast_movement", "start_s": 11.6, "end_s": 12.6, "draft": true, "comment": "пробежка слева направо, у края кадра в конце ролика"}
+    ]
+  }
+}

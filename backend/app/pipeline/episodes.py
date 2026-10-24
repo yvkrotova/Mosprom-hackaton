@@ -27,6 +27,18 @@ from app.schemas.internal import EventUpsert
 logger = logging.getLogger(__name__)
 
 EpisodeKey = tuple[str, str, str | None, int]
+TRAIL_S = 1.5  # хвост траектории ног на кадре-доказательстве
+
+
+def _trail(track: Track | None, ts: float) -> list[tuple[float, float]] | None:
+    """Точки ног трека за последние TRAIL_S секунд в долях кадра."""
+    if track is None or not track.frame_w or not track.frame_h:
+        return None
+    return [
+        (p.foot_x / track.frame_w, p.foot_y / track.frame_h)
+        for p in track.history
+        if ts - p.video_ts <= TRAIL_S
+    ]
 
 
 class EpisodeSink(Protocol):
@@ -47,6 +59,7 @@ class RuleContext:
     priority: Priority
     version: int
     params: BaseScenarioParams
+    confirms_itself: bool = False
 
 
 @dataclass(slots=True)
@@ -70,6 +83,16 @@ class _Episode:
     last_sent_ts: float
     dirty: bool = False
     updates_sent: int = field(default=0)
+    # Данные сценария для события: последние значения RuleHit.extra["details"] и максимумы
+    # числовых (speed -> speed_max). Остальные ключи extra — только для кадра-доказательства.
+    details: dict[str, Any] = field(default_factory=dict)
+
+    def absorb(self, extra: dict[str, Any] | None) -> None:
+        for key, value in ((extra or {}).get("details") or {}).items():
+            self.details[key] = value
+            if isinstance(value, int | float):
+                peak = f"{key}_max"
+                self.details[peak] = max(self.details.get(peak, value), value)
 
 
 class EpisodeManager:
@@ -104,12 +127,21 @@ class EpisodeManager:
 
     # --- основной цикл ----------------------------------------------------------------------
 
-    def process(self, frame: Frame, hits: list[RuleHit], tracks: list[Track]) -> None:
+    def process(
+        self,
+        frame: Frame,
+        hits: list[RuleHit],
+        tracks: list[Track],
+        finished: list[tuple[str, str | None, int]] | None = None,
+    ) -> None:
+        """finished — (scenario_type, zone_id, track_id), которые сценарий объявил завершёнными."""
         ts = frame.video_ts
 
-        # 1. Завершаем эпизоды, пропавшие дольше допуска (до учёта новых hit на этом кадре).
+        # 1. Завершаем эпизоды, пропавшие дольше допуска (до учёта новых hit на этом кадре)
+        #    и те, что сценарий объявил законченными.
+        done = {(self.source_id, str(s), z, t) for s, z, t in finished or []}
         for key, ep in list(self._active.items()):
-            if ts - ep.last_ts > ep.rule.params.gap_tolerance_s:
+            if key in done or ts - ep.last_ts > ep.rule.params.gap_tolerance_s:
                 self._end(key, ep)
 
         # 2. Один hit на ключ (несколько правил могут дать одно и то же нарушение).
@@ -125,7 +157,13 @@ class EpisodeManager:
             if episode is not None:
                 episode.last_ts = ts
                 episode.confidence = max(episode.confidence, hit.confidence)
+                episode.absorb(hit.extra)
                 episode.dirty = True
+                continue
+            if rule.confirms_itself:
+                # Сценарий уже выдержал окно подтверждения: эпизод с момента начала нарушения.
+                start = float((hit.extra or {}).get("start_ts", ts))
+                self._confirm(key, _Candidate(rule, min(start, ts), ts), hit, rule, frame, tracks)
                 continue
             cand = self._candidates.get(key)
             if cand is None or ts - cand.last_ts > cand.rule.params.gap_tolerance_s:
@@ -162,6 +200,12 @@ class EpisodeManager:
         """Треки, по которым сейчас идёт подтверждённый эпизод (тревога уже отправлена)."""
         return {ep.track_id for ep in self._active.values()}
 
+    def alerting_scenarios(self) -> dict[int, set[str]]:
+        out: dict[int, set[str]] = {}
+        for ep in self._active.values():
+            out.setdefault(ep.track_id, set()).add(str(ep.rule.scenario_type))
+        return out
+
     # --- внутреннее ---------------------------------------------------------------------------
 
     def _confirm(
@@ -185,6 +229,7 @@ class EpisodeManager:
             detected_at=utcnow(),
             last_sent_ts=frame.video_ts,
         )
+        ep.absorb(hit.extra)
         self._active[key] = ep
         self.episodes_confirmed += 1
         logger.info(
@@ -228,6 +273,7 @@ class EpisodeManager:
             rule_id=ep.rule.rule_id,
             rule_version=ep.rule.version,
             description=self._description(ep),
+            details=dict(ep.details) or None,
         )
         self.sink.send_event(ep.event_id, payload.model_dump(mode="json"))
 
@@ -255,17 +301,25 @@ class EpisodeManager:
                 )
             caption = [
                 f"{ep.rule.title} | {self.source_name}",
-                f"{self.wall(frame.video_ts):%Y-%m-%d %H:%M:%S}Z | video {frame.video_ts:.1f}s",
+                f"{self.wall(frame.video_ts):%Y-%m-%d %H:%M:%S}Z | видео {frame.video_ts:.1f} с",
             ]
+            extra = hit.extra or {}
+            violator = next((t for t in tracks if t.track_id == hit.track_id), None)
             annotated = annotate_frame(
                 frame.image,
                 frame.width,
                 frame.height,
-                list(self.zones.values()),
+                # Сценарию без зоны полигоны на кадре не нужны.
+                list(self.zones.values())
+                if hit.zone_id or ep.rule.scenario_type == "danger_zone"
+                else [],
                 tracks,
                 hit.track_id,
                 hit.zone_id,
                 caption,
+                violator_label=extra.get("label"),
+                trail=_trail(violator, frame.video_ts) if extra.get("trail") else None,
+                dim_others=bool(extra.get("trail")),
             )
             self.sink.send_evidence(
                 ep.event_id,

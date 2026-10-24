@@ -62,6 +62,8 @@ Pydantic-модель: `app/schemas/cv.py`. Один объект на кадр;
 | `frame_w`, `frame_h` | int > 0 | Размер **исходного** кадра в пикселях (не входа сети) |
 | `inference_ms` | float ≥ 0 | Время **только вызова сети** (session.run / программа LinQ), мс |
 | `preprocess_ms`, `postprocess_ms` | float ≥ 0 \| null | Необязательно: letterbox и декодирование + NMS, мс. Попадают в `/metrics` отдельно |
+| `device_ms` | float ≥ 0 \| null | Необязательно: время на самом ускорителе, если API его отдаёт (сеть = `inference_ms − device_ms`) |
+| `detector_kind` | str \| null | Необязательно: чем посчитано (`onnx_cpu`, `linq_tpu`). Файл с `linq_tpu`, проигранный через replay, показывается как «LinQ TPU (запись)» |
 | `model_version` | str | Любая строка, однозначно определяющая модель и её сборку; попадает в каждое событие |
 | `detections` | list | Пустой список = на кадре ничего нет. Кадр с ошибкой — **не** пустой список, а исключение |
 
@@ -228,3 +230,32 @@ python tools/benchmark_detector.py shift.mp4 --detector onnx --frames 200 --out 
 ```
 `benchmark_detector.py` делает прогрев и выдаёт avg/p50/p95 инференса, пре- и постпроцессинга и FPS; в JSON
 записывается `detector_kind` — замер `onnx_cpu` нельзя выдавать за замер LinQ.
+
+## Трекер
+
+После детектора идёт трекер (`app/pipeline/tracker.py`), выбор — `TRACKER`:
+- `bytetrack` (по умолчанию) — фильтр Калмана и двухэтапное сопоставление: уверенные детекции
+  (≥ `TRACK_HIGH_THRESH` 0.5) и слабые (≥ `TRACK_LOW_THRESH` 0.1) продлевают идущие треки. Новый трек
+  подтверждается после `TRACK_MIN_HITS` (3) попаданий, потерянный живёт `TRACK_BUFFER_S` (2 с) видео.
+  Этап 1b: если рамки уже не пересекаются (бег при низкой частоте кадров), детекция сопоставляется
+  по расстоянию центров в ростах трека;
+- `iou` — прежний жадный трекер, для сравнения.
+
+Поэтому детектор отдаёт и **слабые** детекции: `DETECTOR_CONF_THRESHOLD=0.1`. Слабые отсекает
+`min_confidence` правил. Если `TRACK_BUFFER_S` меньше `gap_tolerance_s` правил, буфер увеличивается
+с предупреждением в логе.
+
+`Track` (то, что видит сценарий): `track_id`, `label`, `bbox` (у ByteTrack — сглаженный), `confidence`,
+`first_seen_ts`, `last_seen_ts`, `hits`, `state` (`tentative` / `confirmed` / `lost`), `history` — точки ног
+за ~3 с в пикселях исходного кадра (`TrackPoint(video_ts, foot_x, foot_y, bbox_h)`). **В правила
+попадают только `confirmed`.**
+
+## Интерфейс сценария — дополнения
+- `ScenarioRule.track_info()` — что сценарий знает о треках на кадре (например скорость) для живого просмотра.
+- `ScenarioRule.finished()` — `(track_id, zone_id)` нарушений, закончившихся по логике сценария:
+  EpisodeManager завершает их эпизоды сразу, не дожидаясь `gap_tolerance_s`.
+- `confirms_itself = True` — сценарий сам выдерживает окно подтверждения (гистерезис, как у бега)
+  и шлёт hit только для подтверждённого нарушения с `extra["start_ts"]`.
+- `RuleHit.extra` — данные для события и кадра-доказательства: `details` (уходит в `event.details`),
+  `label` (крупная подпись у нарушителя), `trail` (рисовать хвост траектории ног).
+- `requires_zone = False` и правило без `zone_id` — сценарий получает пустой список зон (весь кадр).

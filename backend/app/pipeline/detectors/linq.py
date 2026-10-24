@@ -25,7 +25,13 @@ from typing import Any
 import numpy as np
 
 from app.config import Settings
-from app.pipeline.detectors.yolo_common import letterbox, postprocess, resolve_class_ids
+from app.pipeline.detectors.yolo_common import (
+    dequantize,
+    letterbox,
+    postprocess,
+    quantize,
+    resolve_class_ids,
+)
 from app.pipeline.interfaces import Detector, Frame, FrameDetections
 
 # Классы COCO, нужные сценариям. Полную таблицу берите из metadata модели (yolo_common.parse_names),
@@ -34,7 +40,7 @@ COCO_NAMES: dict[int, str] = {0: "person", 2: "car", 3: "motorcycle", 5: "bus", 
 
 
 class LinqDetector(Detector):
-    kind = "linq"
+    kind = "linq_tpu"
 
     def __init__(self, settings: Settings) -> None:
         self.api_url = settings.linq_api_url
@@ -43,16 +49,21 @@ class LinqDetector(Detector):
         self.input_size = settings.model_input_size
         self.names = COCO_NAMES
         self.class_ids = resolve_class_ids(settings.detect_class_list, self.names)
-        self.conf_threshold = settings.conf_threshold
+        self.conf_threshold = settings.detector_conf_threshold
         self.iou_threshold = settings.iou_threshold
         # TODO(CV): подключиться к LinQ и загрузить программу через Python API организаторов
         #   (usage_example_python_api.zip). Логин/пароль — settings.linq_login / linq_password,
         #   только из .env.
         self._session: Any = None
+        # Параметры квантования (scale, zero_point) входа и выхода — из отчёта компилятора LinQ.
+        # None — тензор передаётся/приходит во float32. TODO(CV): заполнить после компиляции.
+        self.input_quant: tuple[float, int] | None = None
+        self.output_quant: tuple[float, int] | None = None
 
     def _to_device_input(self, tensor: np.ndarray) -> Any:
-        # TODO(CV): если вход программы int8 — квантовать параметрами компилятора LinQ.
-        return tensor
+        if self.input_quant is None:
+            return tensor
+        return quantize(tensor, *self.input_quant)
 
     def _run(self, device_input: Any) -> Any:
         # TODO(CV): вызов программы TPU через Python API LinQ; вернуть сырой выход сети.
@@ -61,8 +72,16 @@ class LinqDetector(Detector):
         )
 
     def _dequantize(self, raw: Any) -> np.ndarray:
-        # TODO(CV): int8/uint8 -> float32 (x = (q - zero_point) * scale), форма [1, 84, 8400].
-        return np.asarray(raw, dtype=np.float32)
+        """Выход TPU -> float32 [1, 84, 8400]. int8/uint8 требует output_quant."""
+        arr = np.asarray(raw)
+        if np.issubdtype(arr.dtype, np.integer):
+            if self.output_quant is None:
+                raise ValueError(
+                    f"Выход LinQ целочисленный ({arr.dtype}), но не заданы scale/zero_point выхода "
+                    "(LinqDetector.output_quant) — возьмите их из отчёта компилятора"
+                )
+            return dequantize(arr, *self.output_quant)
+        return arr.astype(np.float32, copy=False)
 
     def infer(self, frame: Frame) -> FrameDetections:
         if frame.image is None:

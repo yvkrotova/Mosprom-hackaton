@@ -6,9 +6,11 @@ import pytest
 from app.config import BACKEND_DIR, Settings
 from app.pipeline.detectors.yolo_common import (
     LetterboxInfo,
+    dequantize,
     letterbox,
     parse_names,
     postprocess,
+    quantize,
     resolve_class_ids,
 )
 from app.pipeline.interfaces import Frame
@@ -89,6 +91,33 @@ def test_names_and_classes():
     assert resolve_class_ids([], names) is None
     with pytest.raises(ValueError, match="dog"):
         resolve_class_ids(["dog"], names)
+
+
+def test_quantize_dequantize_roundtrip_and_decode():
+    """Как будет на LinQ: выход int8 -> деквантование -> тот же postprocess, что у ONNX."""
+    out = _output((400, 320, 160, 180, 0, 0.9))
+    scale, zp = 640 / 127, 0  # одна шкала на весь тензор: координаты до 640 пикселей
+    q = quantize(out, scale, zp)
+    assert q.dtype == np.int8
+    back = dequantize(q, scale, zp)
+    assert np.abs(back - out).max() <= scale / 2 + 1e-6
+    # Уверенность 0.9 при такой грубой шкале обнуляется — поэтому у классов должна быть своя шкала.
+    assert postprocess(back, INFO_720P, NAMES) == []
+    fine = out.copy()
+    fine[0, 4:] = dequantize(quantize(out[0, 4:], 1 / 255, -128), 1 / 255, -128)
+    (det,) = postprocess(fine, INFO_720P, NAMES)
+    assert det.label == "person" and det.confidence == pytest.approx(0.9, abs=0.01)
+
+
+def test_linq_dequantize_requires_params():
+    from app.pipeline.detectors.linq import LinqDetector
+
+    det = LinqDetector(Settings(_env_file=None))
+    with pytest.raises(ValueError, match="scale/zero_point"):
+        det._dequantize(np.zeros((1, 84, 8400), np.int8))
+    det.output_quant = (0.5, 0)
+    assert det._dequantize(np.full((1, 84, 8400), 4, np.int8)).max() == 2.0
+    assert det._dequantize(np.ones((2,), np.float32)).dtype == np.float32
 
 
 @pytest.mark.skipif(not MODEL.is_file(), reason="нет backend/models/yolov8s.onnx")

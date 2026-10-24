@@ -87,6 +87,8 @@ def test_worker_streams_live_states(client, app, settings, configured_source, mo
         original(sid, meta, jpeg)
 
     monkeypatch.setattr(app.state.live_hub, "publish", recording_publish)
+    # Без ограничения частоты: прогон без реального времени длится доли секунды.
+    monkeypatch.setattr(settings, "tracks_push_hz", 0)
     client_ = BackendClient("http://testserver", INTERNAL_TOKEN, http=client, retries=0)
     assert run_worker(src, client_, settings, "mock", threading.Event()) == 0
 
@@ -95,6 +97,10 @@ def test_worker_streams_live_states(client, app, settings, configured_source, mo
     assert {"normal", "in_zone", "alert"} <= states
     track = next(t for meta, _ in seen for t in meta["tracks"])
     assert len(track["keypoints"]) == 17
+    assert track["track_state"] in ("confirmed", "lost") and isinstance(track["flags"], list)
+    assert seen[0][0]["detector_kind"] == "mock"
+    flags = {f for meta, _ in seen for t in meta["tracks"] for f in t["flags"]}
+    assert {"in_zone", "violation"} <= flags
     assert all(jpeg for _, jpeg in seen)
 
 

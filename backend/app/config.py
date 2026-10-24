@@ -4,6 +4,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
@@ -24,12 +25,28 @@ class Settings(BaseSettings):
 
     detector: Literal["mock", "replay", "onnx", "linq"] = "mock"
     replay_path: str = ""
+    # Сценарий заглушки: danger_zone (вход в зону) или run_fast_movement (ходьба, бег, помехи).
+    mock_scenario: Literal["danger_zone", "run_fast_movement"] = "danger_zone"
     # YOLOv8 (onnx и linq): путь к модели, размер входа, пороги, классы через запятую.
     model_path: str = "./models/yolov8s.onnx"
     model_input_size: int = 640
-    conf_threshold: float = 0.35
+    # Низкий порог: слабые детекции нужны ByteTrack, чтобы не терять частично закрытых людей.
+    # min_confidence сценариев отсекает их уже в правилах. Старое имя CONF_THRESHOLD тоже читается.
+    detector_conf_threshold: float = Field(
+        0.1, validation_alias=AliasChoices("detector_conf_threshold", "conf_threshold")
+    )
     iou_threshold: float = 0.45
     detect_classes: str = "person"
+
+    # Трекер: bytetrack (по умолчанию) или iou (прежний, для сравнения).
+    tracker: Literal["bytetrack", "iou"] = "bytetrack"
+    track_high_thresh: float = 0.5
+    track_low_thresh: float = 0.1
+    track_match_thresh: float = 0.8
+    track_buffer_s: float = 2.0
+    track_min_hits: int = 3
+    # Не чаще стольких снимков треков в секунду для живого просмотра.
+    tracks_push_hz: float = 8.0
     # Видеофайл анализируется не быстрее реального времени (для демо); иначе — как можно быстрее.
     realtime_playback: bool = False
 
@@ -50,6 +67,19 @@ class Settings(BaseSettings):
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    @property
+    def tracker_config(self):
+        from app.pipeline.tracker import TrackerConfig
+
+        return TrackerConfig(
+            kind=self.tracker,
+            high_thresh=self.track_high_thresh,
+            low_thresh=self.track_low_thresh,
+            match_thresh=self.track_match_thresh,
+            buffer_s=self.track_buffer_s,
+            min_hits=self.track_min_hits,
+        )
 
     @property
     def detect_class_list(self) -> list[str]:

@@ -9,7 +9,7 @@ DETECTOR_CHOICES = ("mock", "replay", "onnx", "linq")
 
 # Значение DETECTOR -> Detector.kind, который виден в /health, /metrics и на фронте.
 # onnx_cpu — локальный CPU, а не LinQ: на демо это должно быть видно честно.
-DETECTOR_KINDS = {"mock": "mock", "replay": "replay", "onnx": "onnx_cpu", "linq": "linq"}
+DETECTOR_KINDS = {"mock": "mock", "replay": "replay", "onnx": "onnx_cpu", "linq": "linq_tpu"}
 
 
 def detector_kind_for(setting: str) -> str:
@@ -24,6 +24,10 @@ def build_detector(
     analysis_fps: float = 10.0,
 ) -> Detector:
     if kind == "mock":
+        if settings.mock_scenario == "run_fast_movement":
+            from app.pipeline.detectors.mock_run import MockRunDetector
+
+            return MockRunDetector()
         from app.pipeline.detectors.mock import MockDetector
 
         return MockDetector(zone_polygon)

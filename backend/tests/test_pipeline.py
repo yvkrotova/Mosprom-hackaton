@@ -247,9 +247,13 @@ def test_pipeline_on_real_video_sends_raw_and_annotated(demo_video):
     first_id = sink.event_ids()[0]
     kinds = [(eid, k) for eid, k, _, _ in sink.evidence]
     assert kinds[:2] == [(first_id, "frame_raw"), (first_id, "frame_annotated")]
-    for _, _, jpeg, meta in sink.evidence:
+    for _, kind, jpeg, meta in sink.evidence:
         img = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
-        assert img.shape == (240, 320, 3)
+        if kind == "frame_raw":
+            assert img.shape == (240, 320, 3)
+        else:  # маленький кадр размечается в увеличенном виде, пропорции те же
+            h, w = img.shape[:2]
+            assert h >= 240 and w / h == pytest.approx(320 / 240, abs=0.01)
         assert meta["bboxes"][0]["label"] == "person" and meta["frame_time"].endswith("Z")
 
 
@@ -306,7 +310,7 @@ def test_build_detector(tmp_path: Path):
     settings = Settings(_env_file=None, replay_path=str(SAMPLE_PATH))
     assert build_detector("mock", settings).kind == "mock"
     assert build_detector("replay", settings).kind == "replay"
-    assert build_detector("linq", settings).kind == "linq"
+    assert build_detector("linq", settings).kind == "linq_tpu"
     with pytest.raises(ModelFileError, match="не найден"):
         build_detector("onnx", Settings(_env_file=None, model_path=str(tmp_path / "no.onnx")))
     with pytest.raises(ValueError, match="REPLAY_PATH"):

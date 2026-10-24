@@ -23,7 +23,7 @@
 
 | Enum | Значения |
 |---|---|
-| `ScenarioType` | `danger_zone` (человек в опасной зоне), `fall_immobility` (падение/неподвижность — **пока не реализован**, в `GET /scenarios` не появляется) |
+| `ScenarioType` | `danger_zone` (человек в опасной зоне), `run_fast_movement` (бег / резкое перемещение), `fall_immobility` (падение/неподвижность — **пока не реализован**, в `GET /scenarios` не появляется) |
 | `EpisodeState` | `active` (нарушение продолжается), `ended` (закончилось) |
 | `ReviewStatus` | `unreviewed`, `confirmed`, `false_positive`, `escalated` |
 | `OperatorActionType` | `confirm`, `mark_false`, `escalate`, `comment`, `reset` |
@@ -194,6 +194,21 @@ curl -F "file=@shift.mp4" -F "name=Камера 3" -F "site=Цех №2" http://
 | `gap_tolerance_s` | 2.0 | Потеря человека из вида короче этого не завершает эпизод (перекрытие, мигание детекции) |
 | `labels` | `["person"]` | Классы объектов, которые считаются нарушителями |
 
+Параметры `run_fast_movement` (`requires_zone: false`):
+
+| Параметр | По умолчанию | Смысл |
+|---|---|---|
+| `speed_threshold` | 1.5 | Порог скорости, **«ростов человека в секунду»** (смещение ног / высота рамки / Δt), **не м/с**. Ходьба ≈ 0.6–1.0, бег ≈ 2–3. Камера должна быть неподвижной |
+| `end_ratio` | 0.7 | Гистерезис: эпизод продолжается, пока скорость ≥ порог × end_ratio |
+| `confirm_window_s` | 0.8 | Скорость выше порога должна держаться столько секунд видео до тревоги |
+| `end_window_s` | 1.0 | Скорость ниже порога дольше этого — эпизод завершается |
+| `speed_window_s`, `ema_alpha` | 0.6, 0.4 | Окно регрессии скорости и сглаживание |
+| `min_track_age_s`, `min_points`, `max_height_change` | 0.5, 4, 0.35 | Когда скорость «неизвестна» (молодой трек, мало точек, скачет высота рамки); рамка у края кадра — тоже неизвестна |
+| `min_confidence`, `gap_tolerance_s`, `labels` | 0.4, 2.0, `["person"]` | Как у danger_zone |
+
+Правило `run_fast_movement` с `zone_id` — только когда ноги внутри зоны; **без `zone_id` — весь кадр**
+(у `danger_zone` правило без зоны действует во всех зонах источника).
+
 ### Объект `Rule`
 ```json
 {
@@ -257,6 +272,7 @@ curl -F "file=@shift.mp4" -F "name=Камера 3" -F "site=Цех №2" http://
   "rule_id": "c3d9...",
   "rule_version": 1,
   "description": "Человек в зоне «Зона пресса»",
+  "details": null,
   "thumbnail_url": "/media/evidence/e2b4.../frame_annotated_12.000.jpg",
   "evidence": [
     {
@@ -275,6 +291,10 @@ curl -F "file=@shift.mp4" -F "name=Камера 3" -F "site=Цех №2" http://
   "updated_at": "2026-10-23T09:15:09.600Z"
 }
 ```
+
+`details` — данные сценария, `null` у `danger_zone`. У `run_fast_movement`:
+`{"speed": 2.1, "speed_max": 2.6}` — текущая (у идущего эпизода) и максимальная скорость за эпизод,
+«ростов человека в секунду» (не м/с).
 
 Поля времени:
 - `started_at`, `last_seen_at`, `ended_at` — «настенное» время эпизода. Для видеофайла = время запуска анализа + `video_ts`.
@@ -384,7 +404,7 @@ curl "http://localhost:8000/api/v1/events?scenario_type=danger_zone&source_id=0b
       "preprocess_ms_avg": 3.1,
       "postprocess_ms_avg": 1.4,
       "frames_processed": 1830,
-      "detector_kind": "linq",
+      "detector_kind": "linq_tpu",
       "model_version": "yolov8n-linq-int8-2026.10"
     }
   ],
@@ -403,7 +423,8 @@ curl "http://localhost:8000/api/v1/events?scenario_type=danger_zone&source_id=0b
 - `fps` — фактическая скорость обработки кадров воркером; `inference_ms_*` — время только вызова нейросети;
   `preprocess_ms_avg` / `postprocess_ms_avg` — letterbox и декодирование + NMS (`null`, если детектор их не меряет).
 - `detector_kind` — что реально считало кадры: `mock` (заглушка), `replay` (детекции из файла), `onnx_cpu`
-  (YOLOv8s на CPU компьютера — **не LinQ**), `linq` (ускоритель LinQ). Фронт обязан явно помечать всё, что не `linq`.
+  (YOLOv8s на CPU компьютера — **не LinQ**), `linq_tpu` (ускоритель LinQ), `linq_tpu_replay` (запись детекций,
+  посчитанных на LinQ в Jupyter, проигранная через `DETECTOR=replay`). Фронт явно помечает всё, что не начинается с `linq`.
 - `detection_delay_real_s` — `detected_at − started_at`: реальное время отклика от начала нарушения до подтверждения
   (включает окно подтверждения `confirm_window_s`). Для живой камеры это и есть время реакции системы. Для видеофайла
   `started_at` = время запуска анализа + `video_ts_start`, поэтому при обработке быстрее реального времени значение
@@ -426,7 +447,7 @@ curl "http://localhost:8000/api/v1/events?scenario_type=danger_zone&source_id=0b
   ]
 }
 ```
-`detector_kind` — детектор из настройки сервера (`DETECTOR`), те же значения, что в `/metrics` (`DETECTOR=onnx` → `onnx_cpu`).
+`detector_kind` — детектор из настройки сервера (`DETECTOR`), те же значения, что в `/metrics` (`DETECTOR=onnx` → `onnx_cpu`, `linq` → `linq_tpu`).
 `status=degraded`, если БД недоступна или хотя бы один источник в `error`/`disconnected`.
 Источник в `running`, от которого нет heartbeat дольше `HEARTBEAT_TIMEOUT_S` (10 с), переводится в `disconnected`.
 
@@ -457,3 +478,43 @@ curl "http://localhost:8000/api/v1/events?scenario_type=danger_zone&source_id=0b
 
 `data` для `event.*` — тот же объект, что в `GET /events/{id}`, но без `actions`.
 Обновляйте карточку события целиком по `data.id`.
+
+---
+
+## Живой просмотр: WebSocket `/ws/live/{source_id}`
+
+Кадр источника вместе со снимком треков — для мониторинга. Не сохраняется в БД. Воркер присылает снимки
+не чаще `TRACKS_PUSH_HZ` (8) в секунду; между ними берётся самый свежий кадр. Кадр и треки идут **одним
+сообщением**: так рамки всегда соответствуют картинке, под которой их рисуют (отдельный `tracks.update`
+без кадра разъезжался бы с изображением).
+
+| type | data | Когда |
+|---|---|---|
+| `live.frame` | кадр и треки (ниже) | очередной снимок |
+| `live.ended` | `{"source_id"}` | анализ источника завершился |
+
+```json
+{"type": "live.frame", "data": {
+  "source_id": "0b6f...", "frame_idx": 120, "video_ts": 4.8, "width": 1920, "height": 1080,
+  "fps": 9.8, "detector_kind": "onnx_cpu", "image": "data:image/jpeg;base64,...",
+  "tracks": [{
+    "track_id": 3, "label": "person", "confidence": 0.86, "bbox": [0.41, 0.30, 0.47, 0.88],
+    "keypoints": null,
+    "track_state": "confirmed",
+    "state": "alert",
+    "flags": ["violation"],
+    "scenario_types": ["run_fast_movement"],
+    "speed": 2.3,
+    "zone_ids": []
+  }]
+}}
+```
+- `track_state`: `confirmed` — трек виден; `lost` — пропал недавно (не дольше `TRACK_BUFFER_S`), рамка —
+  прогноз фильтра Калмана, рисуйте полупрозрачно. Неподтверждённые треки (шум) не присылаются.
+- `flags`: `in_zone` (ноги в зоне правила), `candidate` (нарушение есть, но ещё не подтверждено:
+  в зоне или быстро), `violation` (идёт подтверждённый эпизод — тревога уже ушла).
+- `state` — то же для обратной совместимости: `normal` / `in_zone` (кандидат) / `alert`.
+- `speed` — скорость сценария `run_fast_movement`, «ростов в секунду»; `null`, если неизвестна или правила нет.
+- `image` — JPEG до 960 пикселей по ширине; `null`, если источник без картинки (replay без видео).
+
+`GET /api/v1/sources/{id}/live.jpg` → последний живой кадр или `404 LIVE_NOT_AVAILABLE`.

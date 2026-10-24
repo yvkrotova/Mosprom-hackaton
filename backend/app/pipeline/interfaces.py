@@ -8,9 +8,10 @@
 """
 
 from abc import ABC, abstractmethod
+from collections import deque
 from collections.abc import Iterator, Sequence
-from dataclasses import dataclass
-from typing import ClassVar
+from dataclasses import dataclass, field
+from typing import Any, ClassVar, Literal
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
@@ -28,6 +29,7 @@ __all__ = [
     "RuleHit",
     "ScenarioRule",
     "Track",
+    "TrackPoint",
     "Tracker",
     "ZoneGeometry",
 ]
@@ -45,15 +47,40 @@ class Frame:
     image: np.ndarray | None = None  # BGR (как отдаёт OpenCV); None у NullFrameSource
 
 
+TrackState = Literal["tentative", "confirmed", "lost"]
+
+
+@dataclass(slots=True, frozen=True)
+class TrackPoint:
+    """Точка истории трека в ПИКСЕЛЯХ исходного кадра: ноги (центр нижней кромки) и высота рамки.
+
+    Пиксели, а не доли: скорость = смещение ног / высота рамки — отношение имеет смысл только
+    в одних единицах по обеим осям.
+    """
+
+    video_ts: float
+    foot_x: float
+    foot_y: float
+    bbox_h: float
+
+
 @dataclass(slots=True)
 class Track:
     track_id: int
     label: str
-    bbox: BBoxTuple
+    bbox: BBoxTuple  # у ByteTrack — сглаженная фильтром Калмана
     confidence: float
     first_seen_ts: float
     last_seen_ts: float
     keypoints: list[tuple[float, float, float]] | None = None
+    hits: int = 1
+    # tentative — ещё не подтверждён (мало попаданий); lost — сейчас не виден, рамка — прогноз.
+    # В правила сценариев попадают только confirmed.
+    state: TrackState = "confirmed"
+    # Последние ~3 с наблюдений (по сырым детекциям), общий объект на всю жизнь трека.
+    history: deque[TrackPoint] = field(default_factory=lambda: deque(maxlen=128))
+    frame_w: int = 0
+    frame_h: int = 0
 
 
 @dataclass(slots=True, frozen=True)
@@ -75,6 +102,8 @@ class RuleHit:
     bbox: BBoxTuple
     video_ts: float
     label: str = "person"
+    # Данные сценария для события и кадра-доказательства, например {"speed": 2.4}.
+    extra: dict[str, Any] | None = None
 
 
 class BaseScenarioParams(BaseModel):
@@ -130,9 +159,19 @@ class ScenarioRule(ABC):
     title: ClassVar[str]
     description: ClassVar[str]
     requires_zone: ClassVar[bool] = True
+    # True — сценарий сам выдерживает confirm_window_s и шлёт hit только для подтверждённого
+    # нарушения (с extra["start_ts"] — началом эпизода); EpisodeManager открывает эпизод сразу.
+    # Нужно сценариям с гистерезисом, где «кандидат» не равен «есть hit».
+    confirms_itself: ClassVar[bool] = False
 
     def __init__(self, rule_id: str) -> None:
         self.rule_id = rule_id
+
+    def finished(self) -> list[tuple[int, str | None]]:
+        """Необязательно: (track_id, zone_id) нарушений, закончившихся на последнем кадре по логике
+        сценария (например, человек замедлился). EpisodeManager завершит их эпизоды сразу, не
+        дожидаясь gap_tolerance_s."""
+        return []
 
     @abstractmethod
     def update(
@@ -142,4 +181,10 @@ class ScenarioRule(ABC):
         params: BaseScenarioParams,
         video_ts: float,
     ) -> list[RuleHit]:
-        """zones — зона правила, либо все зоны источника, если у правила zone_id = null."""
+        """zones — зона правила, либо все зоны источника, если у правила zone_id = null.
+        tracks — только подтверждённые (state=confirmed) треки этого кадра."""
+
+    def track_info(self) -> dict[int, dict[str, Any]]:
+        """Необязательно: что сценарий знает о треках на последнем кадре (для живого просмотра),
+        например {track_id: {"speed": 1.2, "candidate": True}}."""
+        return {}

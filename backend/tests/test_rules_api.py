@@ -42,7 +42,8 @@ def test_zone_polygon_validation(client, make_source, polygon):
 
 def test_scenarios_list(client):
     scenarios = client.get("/api/v1/scenarios").json()
-    assert [s["scenario_type"] for s in scenarios] == ["danger_zone"]  # fall_immobility не готов
+    # fall_immobility не готов и в список не попадает.
+    assert [s["scenario_type"] for s in scenarios] == ["danger_zone", "run_fast_movement"]
     dz = scenarios[0]
     assert dz["requires_zone"] is True
     assert dz["defaults"] == {
@@ -54,6 +55,11 @@ def test_scenarios_list(client):
     props = dz["params_schema"]["properties"]
     assert set(props) == set(dz["defaults"])
     assert props["min_confidence"]["maximum"] == 1
+
+    run = scenarios[1]
+    assert run["requires_zone"] is False
+    assert run["defaults"]["speed_threshold"] == 1.5 and run["defaults"]["confirm_window_s"] == 0.8
+    assert "ростов" in run["params_schema"]["properties"]["speed_threshold"]["description"]
 
 
 @pytest.fixture
@@ -90,7 +96,7 @@ def test_rule_errors(client, setup, make_source):
     src = setup["src"]
     r = _create(client, source_id=src, scenario_type="fall_immobility")
     assert r.status_code == 422 and r.json()["error"]["code"] == "UNKNOWN_SCENARIO"
-    assert r.json()["error"]["details"]["available"] == ["danger_zone"]
+    assert r.json()["error"]["details"]["available"] == ["danger_zone", "run_fast_movement"]
     r = _create(client, source_id=src, scenario_type="smoking")
     assert r.json()["error"]["code"] == "UNKNOWN_SCENARIO"
 

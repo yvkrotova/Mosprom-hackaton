@@ -2,6 +2,7 @@
 
     python tools/seed.py путь/к/видео.mp4 [--name "Камера 3"] [--site "Цех №2"]
     python tools/seed.py --demo        # сгенерировать демо-видео под MockDetector и засеять
+    python tools/seed.py --videos      # 4 тестовых ролика из data/videos/manifest.json
 
 Пишет прямо в БД из DATABASE_URL (миграции применяются автоматически), backend может быть
 запущен или нет. Повторный запуск с тем же видео не создаёт дублей.
@@ -52,8 +53,13 @@ def seed(
             if source is not None and source.zones and source.rules:
                 return SeedResult(source.id, source.zones[0].id, source.rules[0].id, False)
             if source is None:
-                source = Source(name=name, kind=SourceKind.FILE, uri=str(video), site=site,
-                                analysis_fps=settings.default_analysis_fps)  # fmt: skip
+                source = Source(
+                    name=name,
+                    kind=SourceKind.FILE,
+                    uri=str(video),
+                    site=site,
+                    analysis_fps=settings.default_analysis_fps,
+                )
                 session.add(source)
             zone_obj = Zone(source=source, name="Зона пресса", polygon=zone or DEMO_ZONE)
             rule = Rule(
@@ -72,17 +78,90 @@ def seed(
         engine.dispose()
 
 
+def seed_videos(
+    settings: Settings, manifest_path: Path | None = None
+) -> list[tuple[str, str, bool]]:
+    """Источники из data/videos/manifest.json: зоны, правило danger_zone на каждую зону и
+    run_fast_movement на весь кадр (параметры правил — rule_params манифеста). Без дублей.
+    Возвращает [(id ролика, source_id, создан ли)]; ролики без файла пропускаются."""
+    import json
+
+    from app.config import BACKEND_DIR
+    from app.pipeline.scenarios import get_scenario
+
+    manifest_path = manifest_path or BACKEND_DIR / "data" / "videos" / "manifest.json"
+    videos = json.loads(manifest_path.read_text(encoding="utf-8"))["videos"]
+    if settings.auto_migrate:
+        run_migrations(settings.database_url)
+    engine = make_engine(settings.database_url)
+    out = []
+    try:
+        with make_session_factory(engine)() as session:
+            for v in videos:
+                path = (BACKEND_DIR / v["file"]).resolve()
+                if not path.is_file():
+                    print(f"  пропуск {v['id']}: нет файла {v['file']}")
+                    continue
+                source = session.scalars(select(Source).where(Source.uri == str(path))).first()
+                if source is not None:
+                    out.append((v["id"], source.id, False))
+                    continue
+                source = Source(
+                    name=v["title"],
+                    kind=SourceKind.FILE,
+                    uri=str(path),
+                    site="Тестовые видео",
+                    analysis_fps=settings.default_analysis_fps,
+                )
+                session.add(source)
+                zones = [
+                    Zone(source=source, name=z["name"], polygon=z["polygon"])
+                    for z in v.get("zones", [])
+                ]
+                session.add_all(zones)
+                session.flush()
+                rule_params = v.get("rule_params", {})
+                for scenario in v.get("rules", []):
+                    params = get_scenario(scenario).ParamsModel(**rule_params.get(scenario, {}))
+                    targets = [z.id for z in zones] if scenario == "danger_zone" else [None]
+                    for zone_id in targets:
+                        session.add(
+                            Rule(
+                                source=source,
+                                zone_id=zone_id,
+                                scenario_type=scenario,
+                                priority=Priority.HIGH,
+                                params=params.model_dump(mode="json"),
+                            )
+                        )
+                out.append((v["id"], source.id, True))
+            session.commit()
+    finally:
+        engine.dispose()
+    return out
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawTextHelpFormatter
     )
     parser.add_argument("video", nargs="?", type=Path, help="Путь к видеофайлу")
     parser.add_argument("--demo", action="store_true", help="Сгенерировать демо-видео")
+    parser.add_argument(
+        "--videos",
+        action="store_true",
+        help="4 тестовых ролика из data/videos/manifest.json с зонами и правилами",
+    )
     parser.add_argument("--name", default="Камера 3 — цех штамповки")
     parser.add_argument("--site", default="Цех №2")
     args = parser.parse_args()
 
     settings = get_settings()
+    if args.videos:
+        for vid, source_id, created in seed_videos(settings):
+            print(f"  {vid:12} {source_id} {'создан' if created else 'уже был'}")
+        print("Зоны предложены по превью — поправьте их в «Источники и зоны», если нужно.")
+        return
     if args.demo:
         video = args.video or settings.storage_dir / "videos" / "shift_demo.mp4"
         if not video.exists():

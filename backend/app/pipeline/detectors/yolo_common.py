@@ -122,6 +122,17 @@ def postprocess(
     ]
 
 
+def quantize(x: np.ndarray, scale: float, zero_point: int, dtype=np.int8) -> np.ndarray:
+    """float -> int8/uint8 по аффинной схеме q = round(x / scale) + zero_point (с насыщением)."""
+    info = np.iinfo(dtype)
+    return np.clip(np.round(x / scale) + zero_point, info.min, info.max).astype(dtype)
+
+
+def dequantize(q: np.ndarray, scale: float, zero_point: int) -> np.ndarray:
+    """int8/uint8 -> float32: x = (q − zero_point) · scale. Параметры даёт компилятор LinQ."""
+    return (q.astype(np.float32) - np.float32(zero_point)) * np.float32(scale)
+
+
 def parse_names(raw: str | dict | None) -> dict[int, str]:
     """Имена классов из metadata модели ultralytics: строка вида "{0: 'person', ...}"."""
     if not raw:

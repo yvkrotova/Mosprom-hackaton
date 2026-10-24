@@ -1,9 +1,12 @@
-"""Кадр-доказательство: рамки, полигоны зон и подпись сценария и времени.
+"""Кадр-доказательство: рамки, полигоны зон, траектория и подпись сценария и времени.
 
-Встроенный шрифт OpenCV не умеет кириллицу, поэтому подписи транслитерируются.
+Подписи рисуются через Pillow шрифтом с кириллицей (Arial/DejaVu). Если ни Pillow, ни шрифта
+нет — встроенным шрифтом OpenCV с транслитерацией.
 """
 
 from collections.abc import Sequence
+from functools import lru_cache
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -12,8 +15,20 @@ from app.pipeline.interfaces import Track, ZoneGeometry
 
 RED = (40, 40, 230)
 GREEN = (80, 200, 80)
+GRAY = (170, 170, 170)
 WHITE = (255, 255, 255)
 BLACK = (0, 0, 0)
+MIN_SIDE = 320  # кадр-доказательство меньше этого по короткой стороне увеличивается
+
+FONT_CANDIDATES = [
+    "C:/Windows/Fonts/arialbd.ttf",
+    "C:/Windows/Fonts/arial.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+    "/Library/Fonts/Arial.ttf",
+    "/System/Library/Fonts/Supplemental/Arial.ttf",
+]
 
 _TRANSLIT = {
     "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "e", "ж": "zh",
@@ -38,6 +53,53 @@ def translit(text: str) -> str:
     return "".join(out)
 
 
+@lru_cache(maxsize=8)
+def _font(size: int):
+    try:
+        from PIL import ImageFont
+    except ImportError:
+        return None
+    for path in FONT_CANDIDATES:
+        if Path(path).is_file():
+            return ImageFont.truetype(path, size)
+    return None
+
+
+def draw_texts(
+    canvas: np.ndarray, items: list[tuple[str, tuple[int, int], int, tuple, tuple | None]]
+) -> None:
+    """Подписи [(текст, (x, y) левый верх, размер px, цвет BGR, фон BGR | None)] прямо на canvas."""
+    if not items:
+        return
+    font_ok = all(_font(size) for _, _, size, _, _ in items)
+    if font_ok:
+        from PIL import Image, ImageDraw
+
+        img = Image.fromarray(cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB))
+        draw = ImageDraw.Draw(img)
+        for text, (x, y), size, color, bg in items:
+            font = _font(size)
+            # Подпись не должна вылезать за правый край кадра.
+            overflow = draw.textbbox((x, y), text, font=font)[2] - (img.width - 6)
+            if overflow > 0:
+                x = max(4, x - overflow)
+            if bg is not None:
+                left, top, right, bottom = draw.textbbox((x, y), text, font=font)
+                draw.rectangle((left - 4, top - 3, right + 4, bottom + 3), fill=bg[::-1])
+            draw.text((x, y), text, font=font, fill=color[::-1])
+        canvas[:] = cv2.cvtColor(np.asarray(img), cv2.COLOR_RGB2BGR)
+        return
+    for text, (x, y), size, color, bg in items:
+        scale = size / 30
+        txt = translit(text)
+        (tw, th), _ = cv2.getTextSize(txt, cv2.FONT_HERSHEY_SIMPLEX, scale, 1)
+        if bg is not None:
+            cv2.rectangle(canvas, (x - 4, y - 3), (x + tw + 4, y + th + 6), bg, -1)
+        cv2.putText(
+            canvas, txt, (x, y + th), cv2.FONT_HERSHEY_SIMPLEX, scale, color, 1, cv2.LINE_AA
+        )
+
+
 def _px(points: Sequence[Sequence[float]], w: int, h: int) -> np.ndarray:
     return np.array([[round(x * w), round(y * h)] for x, y in points], dtype=np.int32)
 
@@ -51,11 +113,25 @@ def annotate_frame(
     violator_track_id: int | None,
     violation_zone_id: str | None,
     caption_lines: Sequence[str],
+    *,
+    violator_label: str | None = None,
+    trail: Sequence[tuple[float, float]] | None = None,
+    dim_others: bool = False,
 ) -> np.ndarray:
-    """Копия кадра с разметкой. Без изображения (replay без видео) рисует на сером фоне."""
+    """Копия кадра с разметкой. Без изображения (replay без видео) рисует на сером фоне.
+
+    violator_label — крупная подпись у нарушителя («БЕГ / РЕЗКОЕ ПЕРЕМЕЩЕНИЕ · 2.4 роста/с»);
+    trail — хвост траектории ног нарушителя в долях кадра; dim_others — остальные люди серым.
+    """
     canvas = image.copy() if image is not None else np.full((height, width, 3), 50, dtype=np.uint8)
     h, w = canvas.shape[:2]
+    if min(w, h) < MIN_SIDE:
+        # Маленький кадр (например 160×120) увеличиваем: иначе подписи закрывают картинку.
+        k = MIN_SIDE / min(w, h)
+        canvas = cv2.resize(canvas, (round(w * k), round(h * k)), interpolation=cv2.INTER_LINEAR)
+        h, w = canvas.shape[:2]
     thickness = max(2, round(min(w, h) / 300))
+    font_px = max(14, round(min(w, h) / 32))
 
     overlay = canvas.copy()
     for zone in zones:
@@ -65,36 +141,32 @@ def annotate_frame(
         cv2.polylines(canvas, [pts], isClosed=True, color=color, thickness=thickness)
     cv2.addWeighted(overlay, 0.25, canvas, 0.75, 0, dst=canvas)
 
-    font_scale = max(0.5, min(w, h) / 900)
-    for track in tracks:
-        color = RED if track.track_id == violator_track_id else GREEN
-        x1, y1, x2, y2 = _px([track.bbox[:2], track.bbox[2:]], w, h).flatten()
-        cv2.rectangle(canvas, (x1, y1), (x2, y2), color, thickness)
-        label = f"{track.label} #{track.track_id} {track.confidence:.2f}"
-        cv2.putText(
-            canvas,
-            label,
-            (x1, max(15, y1 - 6)),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            font_scale * 0.8,
-            color,
-            max(1, thickness - 1),
-            cv2.LINE_AA,
-        )
+    if trail and len(trail) > 1:
+        pts = _px(trail, w, h)
+        for i in range(1, len(pts)):
+            cv2.line(canvas, tuple(pts[i - 1]), tuple(pts[i]), RED, thickness + 1, cv2.LINE_AA)
+        for p in pts:
+            cv2.circle(canvas, tuple(p), thickness + 1, WHITE, -1, cv2.LINE_AA)
 
-    line_h = round(28 * font_scale) + 6
-    cv2.rectangle(canvas, (0, 0), (w, line_h * len(caption_lines) + 8), BLACK, -1)
+    texts = []
+    for track in tracks:
+        is_violator = track.track_id == violator_track_id
+        color = RED if is_violator else (GRAY if dim_others else GREEN)
+        x1, y1, x2, y2 = _px([track.bbox[:2], track.bbox[2:]], w, h).flatten()
+        line = thickness + 1 if is_violator else (1 if dim_others else thickness)
+        cv2.rectangle(canvas, (x1, y1), (x2, y2), color, line)
+        if is_violator and violator_label:
+            label = f"#{track.track_id} {violator_label}"
+        else:
+            label = f"#{track.track_id} {track.confidence:.2f}"
+        size = font_px if is_violator else round(font_px * 0.75)
+        texts.append((label, (x1, max(0, y1 - size - 8)), size, WHITE, color))
+
+    line_h = round(font_px * 1.35)
+    cv2.rectangle(canvas, (0, 0), (w, line_h * len(caption_lines) + 10), BLACK, -1)
     for i, line in enumerate(caption_lines):
-        cv2.putText(
-            canvas,
-            translit(line),
-            (8, line_h * (i + 1)),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            font_scale,
-            WHITE,
-            max(1, thickness - 1),
-            cv2.LINE_AA,
-        )
+        texts.append((line, (8, 6 + line_h * i), font_px, WHITE, None))
+    draw_texts(canvas, texts)
     return canvas
 
 

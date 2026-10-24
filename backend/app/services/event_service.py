@@ -201,6 +201,8 @@ def upsert_event(
         "ended_at": payload.ended_at,
         "description": payload.description,
     }
+    if payload.details is not None:
+        wanted["details"] = payload.details
     changed = {k: v for k, v in wanted.items() if not _same(getattr(event, k), v)}
     if not changed:
         return UpsertOutcome.UNCHANGED, event

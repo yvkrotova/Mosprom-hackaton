@@ -7,7 +7,7 @@ import logging
 import time
 from collections import deque
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 
 import numpy as np
@@ -27,7 +27,7 @@ from app.pipeline.interfaces import (
     ZoneGeometry,
 )
 from app.pipeline.scenarios.registry import get_scenario
-from app.pipeline.tracker import IoUTracker
+from app.pipeline.tracker import TrackerConfig, build_tracker
 from app.schemas.enums import Priority
 from app.schemas.internal import SourceConfig
 
@@ -88,9 +88,12 @@ class PipelineStats:
 class FrameResult:
     """Что конвейер увидел на кадре — для живого просмотра."""
 
-    tracks: list[Track]
+    tracks: list[Track]  # все живые треки, включая tentative и lost
     hits: list[RuleHit]
     alerting_track_ids: set[int]  # треки с подтверждённым (активным) эпизодом
+    # track_id -> сценарии с активным эпизодом / сведения сценариев (скорость и т.п.)
+    alerting_scenarios: dict[int, set[str]] = field(default_factory=dict)
+    track_info: dict[int, dict] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -108,6 +111,7 @@ class Pipeline:
         sink: EpisodeSink,
         *,
         tracker: Tracker | None = None,
+        tracker_config: TrackerConfig | None = None,
         run_started_at: datetime | None = None,
     ) -> None:
         self.config = config
@@ -129,7 +133,12 @@ class Pipeline:
                 )
                 continue
             params = cls.ParamsModel.model_validate(rule.params)
-            zones = [self.zones[rule.zone_id]] if rule.zone_id else list(self.zones.values())
+            if rule.zone_id:
+                zones = [self.zones[rule.zone_id]]
+            else:
+                # Правило без зоны: сценарию, которому зона обязательна, — все зоны источника;
+                # сценарию без обязательной зоны — весь кадр (пустой список зон).
+                zones = list(self.zones.values()) if cls.requires_zone else []
             self.rules.append(_ActiveRule(cls(rule.id), params, zones))
             contexts[rule.id] = RuleContext(
                 rule_id=rule.id,
@@ -138,12 +147,21 @@ class Pipeline:
                 priority=Priority(rule.priority),
                 version=rule.version,
                 params=params,
+                confirms_itself=cls.confirms_itself,
             )
 
         # Трек должен пережить допустимый пропуск наблюдения, иначе после перекрытия
         # человек получит новый track_id и новый эпизод.
         max_gap = max((r.params.gap_tolerance_s for r in self.rules), default=1.0)
-        self.tracker = tracker or IoUTracker(max_age_s=max(max_gap, 1.0))
+        cfg = tracker_config or TrackerConfig()
+        if cfg.buffer_s < max_gap:
+            logger.warning(
+                "TRACK_BUFFER_S=%.1f < gap_tolerance_s правил (%.1f) — буфер увеличен до %.1f, "
+                "иначе после перекрытия получится новый трек и повторная тревога",
+                cfg.buffer_s, max_gap, max_gap,
+            )  # fmt: skip
+            cfg = replace(cfg, buffer_s=max_gap)
+        self.tracker = tracker or build_tracker(cfg)
         self.episodes = EpisodeManager(
             source_id=config.source.id,
             source_name=config.source.name,
@@ -159,11 +177,24 @@ class Pipeline:
         dets = self.detector.infer(frame)
         self.stats.record(dets.inference_ms, dets.preprocess_ms, dets.postprocess_ms)
         tracks = self.tracker.update(dets)
+        confirmed = [t for t in tracks if t.state == "confirmed"]
         hits: list[RuleHit] = []
+        info: dict[int, dict] = {}
+        finished: list[tuple[str, str | None, int]] = []
         for rule in self.rules:
-            hits.extend(rule.instance.update(tracks, rule.zones, rule.params, frame.video_ts))
-        self.episodes.process(frame, hits, tracks)
-        return FrameResult(tracks, hits, self.episodes.alerting_track_ids())
+            hits.extend(rule.instance.update(confirmed, rule.zones, rule.params, frame.video_ts))
+            for tid, data in rule.instance.track_info().items():
+                info.setdefault(tid, {}).update(data)
+            scenario = str(rule.instance.scenario_type)
+            finished.extend((scenario, zone_id, tid) for tid, zone_id in rule.instance.finished())
+        self.episodes.process(frame, hits, confirmed, finished)
+        return FrameResult(
+            tracks,
+            hits,
+            self.episodes.alerting_track_ids(),
+            self.episodes.alerting_scenarios(),
+            info,
+        )
 
     def run(
         self,

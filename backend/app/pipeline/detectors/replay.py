@@ -42,6 +42,10 @@ class ReplayDetector(Detector):
         self.records = load_replay_file(Path(path))
         self._ts = [r.video_ts for r in self.records]
         self.model_version = self.records[0].model_version
+        # Файл, посчитанный на LinQ (notebook в Jupyter), честно помечается как запись с TPU.
+        source_kind = self.records[0].detector_kind
+        if source_kind:
+            self.kind = f"{source_kind}_replay"
         # Запись подходит кадру, если ближе половины интервала между кадрами анализа.
         self.tolerance_s = 0.5 / analysis_fps
 

@@ -113,7 +113,10 @@ def run_worker(
         logger.warning("У источника нет включённых правил — нарушения искаться не будут")
 
     heartbeat = HeartbeatThread(send_heartbeat, config.settings.heartbeat_interval_s)
-    live = LiveSender(lambda meta, image: client.send_live(source_id, meta, image))
+    live = LiveSender(
+        lambda meta, image: client.send_live(source_id, meta, image),
+        max_rate_hz=settings.tracks_push_hz,
+    )
     detector: Detector | None = None
     status, error, code = "stopped", None, EXIT_OK
     try:
@@ -126,15 +129,16 @@ def run_worker(
         state["model_version"] = detector.model_version
         state["detector_kind"] = detector.kind
         frames = build_frame_source(config, detector, realtime)
-        pipeline = Pipeline(config, detector, client)
+        pipeline = Pipeline(config, detector, client, tracker_config=settings.tracker_config)
         state["stats"] = pipeline.stats
         heartbeat.start()
         live.start()
-        logger.info("Старт: источник %s, детектор %s (%s)", config.source.name, detector.kind,
-                    detector.model_version)  # fmt: skip
+        logger.info("Старт: источник %s, детектор %s (%s), трекер %s", config.source.name,
+                    detector.kind, detector.model_version, settings.tracker)  # fmt: skip
 
         def on_frame(frame: Frame, result: FrameResult) -> None:
-            live.submit(frame_meta(frame, result, pipeline.stats.fps), frame.image)
+            meta = frame_meta(frame, result, pipeline.stats.fps, detector.kind)
+            live.submit(meta, frame.image)
 
         pipeline.run(frames, should_stop=stop_event.is_set, on_frame=on_frame)
         logger.info(

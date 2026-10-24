@@ -15,7 +15,7 @@ from tests.fixtures.make_detections_sample import SAMPLE_PATH
 from tools.benchmark_detector import benchmark
 from tools.export_detections import export
 from tools.make_demo_video import make_demo_video
-from tools.seed import seed
+from tools.seed import seed, seed_videos
 from tools.validate_detections import main as validate_main
 from tools.validate_detections import validate_file
 
@@ -112,6 +112,28 @@ def test_seeded_source_works_with_api(client, settings, demo_video):
     assert len(client.get(f"/api/v1/sources/{result.source_id}/zones").json()) == 1
     assert client.get("/api/v1/rules").json()[0]["scenario_type"] == "danger_zone"
     assert client.get(f"/api/v1/sources/{result.source_id}/preview").status_code == 200
+
+
+def test_seed_videos_from_manifest(settings, tmp_path, demo_video):
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"videos": [
+        {"id": "demo", "file": str(demo_video), "title": "Демо",
+         "zones": [{"name": "Зона", "polygon": [[0.3, 0.4], [0.7, 0.4], [0.7, 0.9], [0.3, 0.9]]}],
+         "rules": ["danger_zone", "run_fast_movement"],
+         "rule_params": {"run_fast_movement": {"confirm_window_s": 0.4}}},
+        {"id": "missing", "file": str(tmp_path / "nope.mp4"), "title": "Нет файла", "rules": []},
+    ]}), encoding="utf-8")  # fmt: skip
+    first = seed_videos(settings, manifest)
+    again = seed_videos(settings, manifest)
+    assert [c for _, _, c in first] == [True] and [c for _, _, c in again] == [False]
+    engine = make_engine(settings.database_url)
+    with make_session_factory(engine)() as s:
+        rules = {r.scenario_type: r for r in s.query(Rule).all()}
+        assert rules["danger_zone"].zone_id is not None
+        assert rules["run_fast_movement"].zone_id is None
+        assert rules["run_fast_movement"].params["confirm_window_s"] == 0.4
+        assert rules["run_fast_movement"].params["speed_threshold"] == 1.5
+    engine.dispose()
 
 
 def test_export_detections_writes_valid_jsonl(tmp_path, demo_video):

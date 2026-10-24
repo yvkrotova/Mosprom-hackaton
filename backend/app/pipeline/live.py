@@ -21,19 +21,39 @@ logger = logging.getLogger(__name__)
 SendFn = Callable[[dict[str, Any], bytes | None], None]
 
 
-def frame_meta(frame: Frame, result: FrameResult, fps: float | None) -> dict[str, Any]:
+def frame_meta(
+    frame: Frame, result: FrameResult, fps: float | None, detector_kind: str | None = None
+) -> dict[str, Any]:
+    """Снимок треков кадра. Только подтверждённые и недавно потерянные (tentative — шум)."""
     zones_by_track: dict[int, list[str]] = {}
+    scenarios_by_track: dict[int, set[str]] = {}
     for hit in result.hits:
+        scenarios_by_track.setdefault(hit.track_id, set()).add(str(hit.scenario_type))
         if hit.zone_id and hit.zone_id not in zones_by_track.setdefault(hit.track_id, []):
             zones_by_track[hit.track_id].append(hit.zone_id)
     tracks = []
     for t in result.tracks:
-        if t.track_id in result.alerting_track_ids:
+        x1, y1, x2, y2 = t.bbox
+        if t.state == "tentative" or x2 <= x1 or y2 <= y1:  # прогноз lost-трека мог уйти за кадр
+            continue
+        info = result.track_info.get(t.track_id, {})
+        alerting = t.track_id in result.alerting_track_ids
+        flags = []
+        if zones_by_track.get(t.track_id):
+            flags.append("in_zone")
+        if info.get("candidate") or (t.track_id in scenarios_by_track and not alerting):
+            flags.append("candidate")
+        if alerting:
+            flags.append("violation")
+        if alerting:
             state = "alert"
-        elif t.track_id in zones_by_track:
+        elif t.track_id in zones_by_track or "candidate" in flags:
             state = "in_zone"
         else:
             state = "normal"
+        scenario_types = scenarios_by_track.get(t.track_id, set()) | result.alerting_scenarios.get(
+            t.track_id, set()
+        )
         tracks.append({
             "track_id": t.track_id,
             "label": t.label,
@@ -42,6 +62,10 @@ def frame_meta(frame: Frame, result: FrameResult, fps: float | None) -> dict[str
             "keypoints": [list(k) for k in t.keypoints] if t.keypoints else None,
             "state": state,
             "zone_ids": zones_by_track.get(t.track_id, []),
+            "track_state": t.state,
+            "speed": info.get("speed"),
+            "flags": flags,
+            "scenario_types": sorted(scenario_types),
         })  # fmt: skip
     return {
         "frame_idx": frame.frame_idx,
@@ -49,14 +73,24 @@ def frame_meta(frame: Frame, result: FrameResult, fps: float | None) -> dict[str
         "width": frame.width,
         "height": frame.height,
         "fps": fps,
+        "detector_kind": detector_kind,
         "tracks": tracks,
     }
 
 
 class LiveSender(threading.Thread):
-    def __init__(self, send: SendFn, max_width: int = 960, jpeg_quality: int = 70) -> None:
+    def __init__(
+        self,
+        send: SendFn,
+        max_width: int = 960,
+        jpeg_quality: int = 70,
+        max_rate_hz: float | None = None,
+    ) -> None:
         super().__init__(name="live-sender", daemon=True)
         self._send = send
+        # Не чаще max_rate_hz снимков в секунду (TRACKS_PUSH_HZ); между ними берётся самый свежий.
+        self._min_interval = 1.0 / max_rate_hz if max_rate_hz else 0.0
+        self._last_sent = 0.0
         self.max_width = max_width
         self.jpeg_quality = jpeg_quality
         self._slot: tuple[dict[str, Any], Any] | None = None
@@ -75,12 +109,16 @@ class LiveSender(threading.Thread):
         while not self._stopped.is_set():
             if not self._ready.wait(0.5):
                 continue
+            wait = self._min_interval - (time.monotonic() - self._last_sent)
+            if wait > 0 and self._stopped.wait(wait):
+                break
             with self._lock:
                 slot, self._slot = self._slot, None
                 self._ready.clear()
             if slot is None:
                 continue
             meta, image = slot
+            self._last_sent = time.monotonic()
             try:
                 self._send(meta, self._encode(image))
                 self.sent += 1

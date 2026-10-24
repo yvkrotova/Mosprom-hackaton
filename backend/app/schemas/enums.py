@@ -6,6 +6,7 @@ from enum import StrEnum
 class ScenarioType(StrEnum):
     DANGER_ZONE = "danger_zone"
     FALL_IMMOBILITY = "fall_immobility"  # пока только в enum и шаблоне, без реализации
+    RUN_FAST_MOVEMENT = "run_fast_movement"  # бег / резкое перемещение
 
 
 class EpisodeState(StrEnum):
