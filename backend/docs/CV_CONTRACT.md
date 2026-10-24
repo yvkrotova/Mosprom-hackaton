@@ -1,12 +1,16 @@
 # CV-контракт: как подключить модель к конвейеру
 
-Документ для участника, который делает нейросеть. Backend уже работает на заглушке (`DETECTOR=mock`);
-ваша модель подключается одним из двух способов, без изменений в остальном коде:
+Документ для участника, который делает нейросеть. Детектор выбирается в `.env` (`DETECTOR=...`),
+остальной код от выбора не зависит:
 
 | Способ | Когда | Что сделать |
 |---|---|---|
+| **ONNX на CPU** | Эталон и демо без LinQ: YOLOv8s (`models/yolov8s.onnx`) через onnxruntime на процессоре компьютера. **Это не LinQ** — `detector_kind=onnx_cpu` | `DETECTOR=onnx` (параметры — `MODEL_PATH`, `CONF_THRESHOLD`, `IOU_THRESHOLD`, `DETECT_CLASSES`) |
 | **(а) Replay** | Модель работает локально (ноутбук, Jupyter), LinQ ещё не готов | Прогнать видео моделью, сохранить детекции в JSONL по формату ниже, запустить backend с `DETECTOR=replay`, `REPLAY_PATH=<файл>` |
-| **(б) LinQ** | Модель скомпилирована под LinQ | Реализовать `LinqDetector` в `app/pipeline/detectors/linq.py`, запустить с `DETECTOR=linq` |
+| **(б) LinQ** | Модель скомпилирована под LinQ | Реализовать вызов ускорителя в `LinqDetector` (`app/pipeline/detectors/linq.py`, места `TODO(CV)`), запустить с `DETECTOR=linq` |
+
+JSONL для replay и для сравнения с LinQ делает `tools/export_detections.py` (видео → детекции тем же
+детектором, что и в конвейере), скорость меряет `tools/benchmark_detector.py` — см. раздел «YOLOv8s» ниже.
 
 Схема конвейера:
 
@@ -56,7 +60,8 @@ Pydantic-модель: `app/schemas/cv.py`. Один объект на кадр;
 | `frame_idx` | int ≥ 0 | Номер кадра **исходного** видео, с нуля (не номер обработанного кадра) |
 | `video_ts` | float ≥ 0 | Время кадра от начала видео, секунды. Возрастает от строки к строке |
 | `frame_w`, `frame_h` | int > 0 | Размер **исходного** кадра в пикселях (не входа сети) |
-| `inference_ms` | float ≥ 0 | Чистое время инференса кадра (препроцессинг + сеть + постпроцессинг), мс |
+| `inference_ms` | float ≥ 0 | Время **только вызова сети** (session.run / программа LinQ), мс |
+| `preprocess_ms`, `postprocess_ms` | float ≥ 0 \| null | Необязательно: letterbox и декодирование + NMS, мс. Попадают в `/metrics` отдельно |
 | `model_version` | str | Любая строка, однозначно определяющая модель и её сборку; попадает в каждое событие |
 | `detections` | list | Пустой список = на кадре ничего нет. Кадр с ошибкой — **не** пустой список, а исключение |
 
@@ -165,7 +170,8 @@ class Detector(ABC):
   отправит статус `error` с текстом ошибки, источник станет красным в интерфейсе. Пустой список детекций при ошибке
   недопустим: это выглядело бы как «нарушений нет».
 
-`LinqDetector` (`app/pipeline/detectors/linq.py`) сейчас — заглушка с `NotImplementedError`. Что должно быть внутри:
+`LinqDetector` (`app/pipeline/detectors/linq.py`): пре- и постпроцессинг уже готовы и общие с `OnnxDetector`
+(`yolo_common.py`), заглушка — только вызов ускорителя (`_run` бросает `NotImplementedError`). Что осталось:
 
 1. **`__init__`** — подключение к LinQ и загрузка программы (`LINQ_API_URL`, `LINQ_PROGRAM` из `.env`;
    логины и пароли — только в `.env`, никогда в коде). Здесь же задаётся `model_version`.
@@ -195,3 +201,30 @@ class Detector(ABC):
 Плюс задержки по событиям (считает backend): реальное время отклика `detected_at − started_at`,
 задержка по таймлайну видео `video_ts_detected − video_ts_start` и `notified_at − detected_at`.
 Для отчёта о скорости на LinQ берите `inference_ms_*` и `fps` при `DETECTOR=linq`.
+
+## YOLOv8s: вход, выход, общий код
+
+Проверенные параметры `models/yolov8s.onnx` (экспорт `yolo export model=yolov8s.pt format=onnx imgsz=640 opset=12 simplify=True`):
+
+| Что | Значение |
+|---|---|
+| Вход `images` | `[1, 3, 640, 640]` float32, RGB, `0..1`, статичный размер |
+| Выход `output0` | `[1, 84, 8400]` float32, **без NMS**: `cx, cy, w, h` в пикселях входа 640 + 80 оценок классов COCO (уже после sigmoid, objectness нет) |
+| Классы | `custom_metadata_map["names"]` модели: 0 person, 2 car, 3 motorcycle, 5 bus, 7 truck, … |
+
+Имена входа/выхода, размер входа и классы `OnnxDetector` читает из модели. Общие функции —
+`app/pipeline/detectors/yolo_common.py` (без onnxruntime):
+- `letterbox(image_bgr, 640)` → тензор + `LetterboxInfo` (масштаб с сохранением пропорций, паддинг 114, BGR→RGB, `/255`, CHW);
+- `postprocess(output, info, names, conf_threshold, iou_threshold, class_ids)` → транспонирование, лучший класс,
+  порог, фильтр классов, `cxcywh→xyxy`, NMS по классам, снятие паддинга и масштаба, обрезка, доли `0..1`.
+
+После квантования под LinQ выход может прийти в int8: его нужно деквантовать до float32 той же формы
+(`LinqDetector._dequantize`), дальше — тот же `postprocess`.
+
+```bash
+python tools/export_detections.py shift.mp4 -o dets_onnx.jsonl --detector onnx --fps 10   # для replay и сравнения
+python tools/validate_detections.py dets_onnx.jsonl
+python tools/benchmark_detector.py shift.mp4 --detector onnx --frames 200 --out bench_onnx.json
+```
+`benchmark_detector.py` делает прогрев и выдаёт avg/p50/p95 инференса, пре- и постпроцессинга и FPS; в JSON
+записывается `detector_kind` — замер `onnx_cpu` нельзя выдавать за замер LinQ.

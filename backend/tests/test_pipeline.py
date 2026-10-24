@@ -9,8 +9,9 @@ import pytest
 from app.config import Settings
 from app.pipeline.annotate import annotate_frame
 from app.pipeline.detectors import build_detector
-from app.pipeline.detectors.linq import LinqDetector, letterbox, unletterbox_boxes
+from app.pipeline.detectors.linq import LinqDetector
 from app.pipeline.detectors.mock import DURATION_S, MockDetector
+from app.pipeline.detectors.onnx import ModelFileError
 from app.pipeline.detectors.replay import ReplayDetector, ReplayFileError
 from app.pipeline.interfaces import (
     Detection,
@@ -306,6 +307,8 @@ def test_build_detector(tmp_path: Path):
     assert build_detector("mock", settings).kind == "mock"
     assert build_detector("replay", settings).kind == "replay"
     assert build_detector("linq", settings).kind == "linq"
+    with pytest.raises(ModelFileError, match="не найден"):
+        build_detector("onnx", Settings(_env_file=None, model_path=str(tmp_path / "no.onnx")))
     with pytest.raises(ValueError, match="REPLAY_PATH"):
         build_detector("replay", Settings(_env_file=None, replay_path=""))
     with pytest.raises(ValueError, match="Неизвестный"):
@@ -317,13 +320,3 @@ def test_linq_stub_raises_not_implemented():
     frame = Frame("s", 0, 0.0, 64, 48, np.zeros((48, 64, 3), np.uint8))
     with pytest.raises(NotImplementedError, match="LinQ"):
         detector.infer(frame)
-
-
-def test_letterbox_roundtrip():
-    image = np.zeros((720, 1280, 3), np.uint8)
-    canvas, scale, pad = letterbox(image, 640)
-    assert canvas.shape == (640, 640, 3) and pad == (0, 140)
-    # Бокс во входе сети -> доли исходного кадра.
-    net_box = np.array([[320.0, 140.0 + 90.0, 480.0, 140.0 + 270.0]])
-    rel = unletterbox_boxes(net_box, scale, pad, 1280, 720)
-    assert rel[0] == pytest.approx([0.5, 0.25, 0.75, 0.75])

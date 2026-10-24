@@ -13,3 +13,7 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .ruff_cache/
+
+# Веса моделей не коммитятся (как получить — README, «Модель YOLOv8s»)
+models/*.onnx
+models/*.pt

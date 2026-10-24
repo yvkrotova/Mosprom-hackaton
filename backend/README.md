@@ -19,18 +19,18 @@ Backend веб-приложения видеоконтроля промышле�
 | Требование кейса | Где |
 |---|---|
 | Приём данных | Загрузка видеофайла (`POST /sources/upload`), источник по пути или `rtsp://` (`POST /sources`) |
-| Распознавание нарушений | Конвейер `Detector → Tracker → сценарии → EpisodeManager`; детектор выбирается через `DETECTOR=mock\|replay\|linq` |
+| Распознавание нарушений | Конвейер `Detector → Tracker → сценарии → EpisodeManager`; детектор выбирается через `DETECTOR=mock\|replay\|onnx\|linq`; `onnx` — настоящая YOLOv8s на CPU |
 | Оперативное оповещение | WebSocket `/ws/events`: `event.created` с кадром, камерой, зоной, временем и типом нарушения |
 | Подавление повторов | Нарушение подтверждается `confirm_window_s`; потеря короче `gap_tolerance_s` не завершает эпизод; одна тревога на эпизод |
 | Журнал с фильтрами | `GET /events`: тип, камера, зона, интервал времени, статус, приоритет; карточка события и действия оператора |
-| Замеры скорости | `GET /metrics`: FPS, время инференса (среднее и p95), задержка обнаружения, задержка оповещения, тревог на эпизод |
+| Замеры скорости | `GET /metrics`: FPS, время инференса (среднее и p95), пре- и постпроцессинг, задержка обнаружения, задержка оповещения, тревог на эпизод, `detector_kind`; `tools/benchmark_detector.py` |
 | Новые сценарии без переделки | Реестр плагинов `@register_scenario`, параметры с JSON Schema (`GET /scenarios`), шаблон `_template.py` |
 | Ошибки видны | Ошибка детектора или камеры → источник `error` с текстом; пропал heartbeat → `disconnected`; `GET /health` |
 | Данные переживают перезапуск | SQLite/PostgreSQL + файлы в постоянном `STORAGE_DIR`; при старте зависшие эпизоды закрываются |
 
 **Ограничения:**
-- **CV-модель ещё не готова.** Сейчас работает заглушка `MockDetector` с известным сценарием. Реальная модель подключается заменой одного класса, см. «[Подключение модели](#подключение-модели-для-cv-участника)».
-- **`LinqDetector` — заглушка.** Вызов Python API LinQ и декодирование выхода сети помечены TODO: сигнатуры берутся из `usage_example_python_api.zip` организаторов. letterbox, NMS и перевод координат уже реализованы.
+- **Нейросеть пока на CPU, не на LinQ.** `DETECTOR=onnx` запускает YOLOv8s (COCO) через onnxruntime на процессоре компьютера (~70 мс/кадр на ноутбуке). В `/health`, `/metrics` и в интерфейсе это видно как `onnx_cpu` с пометкой «не LinQ».
+- **`LinqDetector` — заглушка вызова ускорителя.** Пре- и постпроцессинг общие с `OnnxDetector` и готовы; вызов Python API LinQ (`_run`) и квантование/деквантование помечены `TODO(CV)`: сигнатуры берутся из `usage_example_python_api.zip` организаторов.
 - **Сценарии.** Реализован `danger_zone`. `fall_immobility` есть в enum и как рабочий пример в шаблоне, но не зарегистрирован.
 - **Источники.** `kind=images` пока не запускается. RTSP открывается через OpenCV, но на живой камере не проверялся.
 - **Клипы.** Видеофрагменты (`EvidenceKind.clip`) пока не создаются — только кадры `frame_raw` и `frame_annotated`.
@@ -72,7 +72,8 @@ app/
   services/      события, кадры, источники, правила, статистика, WS-хаб, WorkerManager
   pipeline/      interfaces, sources, detectors/, tracker, scenarios/, episodes, annotate,
                  runner (Pipeline), worker, backend_client
-workers/run_pipeline.py    tools/ (seed, validate_detections, make_demo_video)
+workers/run_pipeline.py    tools/ (seed, validate_detections, make_demo_video, export_detections, benchmark_detector)
+models/                    веса YOLOv8s (не в git)
 alembic/                   tests/ (+ fixtures/)    docs/
 ```
 
@@ -138,8 +139,12 @@ curl http://localhost:8000/api/v1/events
 | `INTERNAL_TOKEN` | пусто | Токен воркер → backend. Пусто — генерируется при старте (подходит, если воркеры запускает backend) |
 | `BACKEND_URL` | `http://localhost:8000` | Адрес backend для воркера |
 | `CORS_ORIGINS` | `http://localhost:5173` | Адреса фронтенда через запятую |
-| `DETECTOR` | `mock` | `mock` \| `replay` \| `linq` |
+| `DETECTOR` | `mock` | `mock` \| `replay` \| `onnx` (YOLOv8s на CPU, не LinQ) \| `linq` |
 | `REPLAY_PATH` | пусто | JSONL-файл детекций для `replay` |
+| `MODEL_PATH` | `./models/yolov8s.onnx` | Модель для `onnx` (относительно `backend/`) |
+| `MODEL_INPUT_SIZE` | `640` | Сторона входа сети, если в модели не задана |
+| `CONF_THRESHOLD`, `IOU_THRESHOLD` | `0.35`, `0.45` | Порог уверенности и порог IoU для NMS |
+| `DETECT_CLASSES` | `person` | Классы COCO через запятую (`person,car,truck`) |
 | `REALTIME_PLAYBACK` | `false` | Анализ файла в реальном темпе (для демо) |
 | `HEARTBEAT_INTERVAL_S` | `2` | Период heartbeat воркера |
 | `HEARTBEAT_TIMEOUT_S` | `10` | Нет heartbeat дольше → `disconnected` |
@@ -209,6 +214,26 @@ curl "$API/stats?from=2026-10-23T00:00:00Z"
 curl "$API/metrics?source_id=<source_id>"
 ```
 В PowerShell используйте `curl.exe`, а JSON передавайте из файла: `-d "@body.json"`.
+
+## Модель YOLOv8s
+
+Файлы весов не коммитятся (`models/*.onnx`, `models/*.pt` в `.gitignore`). Положите их в `backend/models/`:
+- `yolov8s.onnx` — **используется** детектором `DETECTOR=onnx`;
+- `yolov8s.pt` — только для повторного экспорта; ultralytics и torch в backend **не** ставятся.
+
+Как получить заново (в отдельном окружении, где есть `pip install ultralytics`):
+```bash
+yolo export model=yolov8s.pt format=onnx imgsz=640 opset=12 simplify=True
+```
+Вход `images [1,3,640,640]` float32 RGB 0..1, выход `output0 [1,84,8400]` без NMS; имена входа/выхода и классов
+`OnnxDetector` читает из модели. Подробности и общий код с LinQ — [docs/CV_CONTRACT.md](docs/CV_CONTRACT.md#yolov8s-вход-выход-общий-код).
+
+```bash
+# .env: DETECTOR=onnx   (и при желании REALTIME_PLAYBACK=true для демо)
+python tools/benchmark_detector.py [video.mp4] --frames 200 --out bench.json   # avg/p50/p95, FPS
+python tools/export_detections.py video.mp4 -o dets.jsonl                      # JSONL для replay / сравнения с LinQ
+```
+Нет файла модели → воркер честно уходит в `error` с текстом «Файл модели не найден…», источник красный в интерфейсе.
 
 ## Подключение модели (для CV-участника)
 

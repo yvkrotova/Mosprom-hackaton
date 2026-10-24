@@ -381,6 +381,8 @@ curl "http://localhost:8000/api/v1/events?scenario_type=danger_zone&source_id=0b
       "fps": 24.6,
       "inference_ms_avg": 18.4,
       "inference_ms_p95": 22.9,
+      "preprocess_ms_avg": 3.1,
+      "postprocess_ms_avg": 1.4,
       "frames_processed": 1830,
       "detector_kind": "linq",
       "model_version": "yolov8n-linq-int8-2026.10"
@@ -398,7 +400,10 @@ curl "http://localhost:8000/api/v1/events?scenario_type=danger_zone&source_id=0b
   }
 }
 ```
-- `fps` — фактическая скорость обработки кадров воркером; `inference_ms_*` — чистое время инференса кадра.
+- `fps` — фактическая скорость обработки кадров воркером; `inference_ms_*` — время только вызова нейросети;
+  `preprocess_ms_avg` / `postprocess_ms_avg` — letterbox и декодирование + NMS (`null`, если детектор их не меряет).
+- `detector_kind` — что реально считало кадры: `mock` (заглушка), `replay` (детекции из файла), `onnx_cpu`
+  (YOLOv8s на CPU компьютера — **не LinQ**), `linq` (ускоритель LinQ). Фронт обязан явно помечать всё, что не `linq`.
 - `detection_delay_real_s` — `detected_at − started_at`: реальное время отклика от начала нарушения до подтверждения
   (включает окно подтверждения `confirm_window_s`). Для живой камеры это и есть время реакции системы. Для видеофайла
   `started_at` = время запуска анализа + `video_ts_start`, поэтому при обработке быстрее реального времени значение
@@ -421,6 +426,7 @@ curl "http://localhost:8000/api/v1/events?scenario_type=danger_zone&source_id=0b
   ]
 }
 ```
+`detector_kind` — детектор из настройки сервера (`DETECTOR`), те же значения, что в `/metrics` (`DETECTOR=onnx` → `onnx_cpu`).
 `status=degraded`, если БД недоступна или хотя бы один источник в `error`/`disconnected`.
 Источник в `running`, от которого нет heartbeat дольше `HEARTBEAT_TIMEOUT_S` (10 с), переводится в `disconnected`.
 

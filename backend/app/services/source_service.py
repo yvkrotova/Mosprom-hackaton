@@ -190,6 +190,8 @@ def apply_heartbeat(
             fps=hb.fps,
             inference_ms_avg=hb.inference_ms_avg,
             inference_ms_p95=hb.inference_ms_p95,
+            preprocess_ms_avg=hb.preprocess_ms_avg,
+            postprocess_ms_avg=hb.postprocess_ms_avg,
             frames_processed=hb.frames_processed,
             model_version=hb.model_version,
             detector_kind=hb.detector_kind,

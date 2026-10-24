@@ -32,5 +32,7 @@ class FrameDetections(BaseModel):
     frame_w: int = Field(gt=0, description="Ширина исходного кадра, пиксели")
     frame_h: int = Field(gt=0)
     inference_ms: float = Field(ge=0, description="Чистое время инференса кадра, мс")
+    preprocess_ms: float | None = Field(None, ge=0, description="Подготовка входа сети, мс")
+    postprocess_ms: float | None = Field(None, ge=0, description="Декодирование выхода и NMS, мс")
     model_version: str = Field(min_length=1, examples=["yolov8n-linq-int8-2026.10"])
     detections: list[Detection] = Field(default_factory=list)

@@ -40,12 +40,31 @@ class PipelineStats:
     def __init__(self, window: int = 100) -> None:
         self.frames_processed = 0
         self._inference_ms: deque[float] = deque(maxlen=window)
+        self._preprocess_ms: deque[float] = deque(maxlen=window)
+        self._postprocess_ms: deque[float] = deque(maxlen=window)
         self._frame_times: deque[float] = deque(maxlen=window)
 
-    def record(self, inference_ms: float) -> None:
+    def record(
+        self,
+        inference_ms: float,
+        preprocess_ms: float | None = None,
+        postprocess_ms: float | None = None,
+    ) -> None:
         self.frames_processed += 1
         self._inference_ms.append(inference_ms)
+        if preprocess_ms is not None:
+            self._preprocess_ms.append(preprocess_ms)
+        if postprocess_ms is not None:
+            self._postprocess_ms.append(postprocess_ms)
         self._frame_times.append(time.monotonic())
+
+    @property
+    def preprocess_ms_avg(self) -> float | None:
+        return round(float(np.mean(self._preprocess_ms)), 2) if self._preprocess_ms else None
+
+    @property
+    def postprocess_ms_avg(self) -> float | None:
+        return round(float(np.mean(self._postprocess_ms)), 2) if self._postprocess_ms else None
 
     @property
     def fps(self) -> float | None:
@@ -138,7 +157,7 @@ class Pipeline:
 
     def process_frame(self, frame: Frame) -> FrameResult:
         dets = self.detector.infer(frame)
-        self.stats.record(dets.inference_ms)
+        self.stats.record(dets.inference_ms, dets.preprocess_ms, dets.postprocess_ms)
         tracks = self.tracker.update(dets)
         hits: list[RuleHit] = []
         for rule in self.rules:

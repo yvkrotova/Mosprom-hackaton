@@ -98,6 +98,8 @@ def get_metrics(session: Session, source_id: str | None) -> MetricsOut:
                 fps=stat.fps if stat else None,
                 inference_ms_avg=stat.inference_ms_avg if stat else None,
                 inference_ms_p95=stat.inference_ms_p95 if stat else None,
+                preprocess_ms_avg=stat.preprocess_ms_avg if stat else None,
+                postprocess_ms_avg=stat.postprocess_ms_avg if stat else None,
                 frames_processed=stat.frames_processed if stat else None,
                 detector_kind=stat.detector_kind if stat else None,
                 model_version=stat.model_version if stat else None,

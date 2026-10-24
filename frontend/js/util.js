@@ -19,14 +19,20 @@ export function h(html) {
 export const LABELS = {
   scenario: { danger_zone: "Человек в опасной зоне", fall_immobility: "Падение / неподвижность" },
   state: { active: "Идёт", ended: "Завершено" },
-  review: { unreviewed: "Не проверено", confirmed: "Подтверждено", false_positive: "Ложное", escalated: "Эскалировано" },
+  review: { unreviewed: "Не проверено", confirmed: "Подтверждено", false_positive: "Ложное", escalated: "Передано мастеру" },
   priority: { low: "Низкий", medium: "Средний", high: "Высокий", critical: "Критический" },
   status: { idle: "Не запускался", running: "Анализ идёт", stopped: "Остановлен", error: "Ошибка", disconnected: "Нет связи" },
-  action: { confirm: "Подтвердил", mark_false: "Отметил ложным", escalate: "Эскалировал", comment: "Комментарий", reset: "Сбросил проверку" },
-  detector: { mock: "MOCK · заглушка", replay: "REPLAY · файл детекций", linq: "LinQ NPU" },
+  action: { confirm: "Подтвердил", mark_false: "Отметил ложным", escalate: "Передал мастеру", comment: "Комментарий", reset: "Сбросил проверку" },
+  detector: {
+    mock: "MOCK · заглушка", replay: "REPLAY · файл детекций",
+    onnx_cpu: "ONNX · CPU (не LinQ)", onnx: "ONNX · CPU (не LinQ)", linq: "LinQ NPU",
+  },
 };
 
 export const label = (group, key) => LABELS[group]?.[key] ?? key ?? "—";
+
+// Настоящий замер на ускорителе — только detector_kind = "linq". Остальное помечаем явно.
+export const isLinq = (kind) => kind === "linq";
 
 // Та же таблица переходов, что в backend (docs/CONTRACT.md).
 export const TRANSITIONS = {

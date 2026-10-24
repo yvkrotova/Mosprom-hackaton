@@ -6,6 +6,15 @@
   <title>LinQ Safety</title>
   <meta name="description" content="Видеоконтроль промышленной безопасности на нейроускорителе LinQ" />
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2310b981' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z'/%3E%3C/svg%3E" />
+  <script>
+    // Тема до первой отрисовки, чтобы не мигало: выбор оператора, иначе тема системы.
+    (function () {
+      var t = null;
+      try { t = JSON.parse(localStorage.getItem("linq.theme")); } catch (e) { /* приватный режим */ }
+      if (t !== "light" && t !== "dark") t = matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+      document.documentElement.dataset.theme = t;
+    })();
+  </script>
   <link rel="stylesheet" href="css/app.css" />
 </head>
 <body>
@@ -28,6 +37,7 @@
     </div>
 
     <div class="topbar-actions">
+      <button class="chip chip-btn" id="theme-btn" title="Светлая / тёмная тема" aria-label="Сменить тему"></button>
       <button class="chip chip-btn" id="operator-btn" title="Кто подтверждает тревоги"><i data-icon="user"></i><span id="operator-name"></span></button>
       <div class="sound-wrap">
         <button class="chip chip-btn" id="sound-btn" aria-haspopup="true"><span id="sound-btn-icon"></span><span id="sound-btn-text">Звук</span></button>
@@ -45,9 +55,10 @@
   </header>
 
   <nav class="tabs" role="tablist">
-    <button class="tab active" data-tab="live" role="tab"><i data-icon="video"></i>Наблюдение</button>
-    <button class="tab" data-tab="territory" role="tab"><i data-icon="pen"></i>Территории и правила</button>
-    <button class="tab" data-tab="analytics" role="tab"><i data-icon="chart"></i>Аналитика и отчёты</button>
+    <button class="tab active" data-tab="live" role="tab"><i data-icon="video"></i>Мониторинг</button>
+    <button class="tab" data-tab="journal" role="tab"><i data-icon="list"></i>Журнал</button>
+    <button class="tab" data-tab="territory" role="tab"><i data-icon="pen"></i>Источники и зоны</button>
+    <button class="tab" data-tab="analytics" role="tab"><i data-icon="chart"></i>Статистика</button>
     <div class="tabs-spacer"></div>
     <button class="btn btn-sm" id="upload-btn"><i data-icon="upload"></i>Добавить видео</button>
   </nav>
@@ -58,9 +69,14 @@
     <button class="btn btn-sm btn-warn" id="sound-unlock-btn">Включить звук</button>
   </div>
   <div id="alarm-banner" class="banner banner-alarm" hidden></div>
+  <div id="offline-banner" class="banner banner-offline" role="alert" hidden>
+    <i data-icon="server-off"></i>
+    <span><b>Нет связи с сервером.</b> Данные на экране могут быть устаревшими, новые тревоги не приходят. Переподключаемся…</span>
+  </div>
 
   <main>
     <section id="screen-live" class="screen"></section>
+    <section id="screen-journal" class="screen" hidden></section>
     <section id="screen-territory" class="screen" hidden></section>
     <section id="screen-analytics" class="screen" hidden></section>
   </main>

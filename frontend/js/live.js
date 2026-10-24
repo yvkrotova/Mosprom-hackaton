@@ -1,13 +1,13 @@
 // Вкладка «Наблюдение»: живой кадр с зонами, рамками, скелетом и следом; лента тревог.
 import { api } from "./api.js";
 import { mediaUrl } from "./config.js";
-import { act, openEvent, reviewBadge, stateBadge } from "./event-modal.js";
+import { act, openEvent, priorityBadge, reviewBadge, stateBadge } from "./event-modal.js";
 import { hydrateIcons, icon } from "./icons.js";
 import { Socket } from "./sockets.js";
 import { sound } from "./sound.js";
 import { drawTrack, drawZone, Stage, zoneColor } from "./stage.js";
 import { currentSource, emit, on, patchSource, selectSource, state } from "./state.js";
-import { $, $$, canDo, episodeSeconds, esc, fmtDuration, fmtNum, fmtTime, label, stored, store, toastError } from "./util.js";
+import { $, $$, canDo, episodeSeconds, esc, fmtDuration, fmtNum, fmtTime, isLinq, label, stored, store, toastError } from "./util.js";
 
 const TRAIL_LEN = 30;
 
@@ -72,6 +72,7 @@ export function initLive(root) {
         </div>
         <div class="feed-filters">
           <button class="btn btn-sm active" data-filter="all">Все</button>
+          <button class="btn btn-sm" data-filter="camera" title="Только выбранная камера">Эта камера</button>
           <button class="btn btn-sm" data-filter="unreviewed">Без реакции</button>
           <button class="btn btn-sm" data-filter="active">Идут сейчас</button>
         </div>
@@ -100,7 +101,9 @@ export function initLive(root) {
   }
 
   on("sources", () => { renderCameraControls(); renderOverlay(); });
-  on("source-selected", () => connectLive());
+  on("server", () => renderOverlay());
+  on("loaded", () => renderOverlay());
+  on("source-selected", () => { connectLive(); if (view.feedFilter === "camera") renderFeed(); });
   on("zones", () => renderOverlay());
   on("event", () => scheduleFeed());
   on("feed-loaded", () => renderFeed());
@@ -225,7 +228,7 @@ function loop(now) {
     setIf(status, "textContent", `В зоне ${zoneNames(inzone)} — подтверждение…`);
   } else {
     setIf(status, "className", "zone-status safe");
-    setIf(status, "textContent", fresh ? `БЕЗОПАСНО · людей в кадре: ${tracks.length}` : "—");
+    setIf(status, "textContent", fresh ? `Анализ идёт · нарушений нет · людей в кадре: ${tracks.length}` : "—");
   }
 
   const ts = $("#ov-ts");
@@ -280,13 +283,23 @@ function renderOverlay() {
   const fresh = view.frame && performance.now() - view.frameAt < 3000;
   const zones = state.zones[state.sourceId] || [];
   const det = state.metrics?.sources?.[0];
-  $("#ov-info").innerHTML = `
-    <div style="color:var(--green)">${icon("cpu")} ${esc(det?.model_version || "модель —")}</div>
-    <div class="muted">Детектор: <span style="color:var(--text)">${esc(label("detector", state.health?.detector_kind))}</span></div>
+  const kind = det?.detector_kind || state.health?.detector_kind;
+  const fps = fresh ? view.frame.fps : det?.fps;
+  const infoHtml = `
+    <div style="color:${isLinq(kind) ? "#34d399" : "#fbbf24"}">${icon("cpu")} ${esc(label("detector", kind))}</div>
+    <div class="muted">Модель: <span style="color:var(--text)">${esc(det?.model_version || "—")}</span></div>
+    <div class="muted">FPS: <span style="color:var(--text)">${fmtNum(fps, 1)}</span> · инференс: <span style="color:var(--text)">${fmtNum(det?.inference_ms_avg, 0, " мс")}</span></div>
     <div class="muted">Зон: <span style="color:var(--text)">${zones.length}</span> · людей: <span style="color:var(--text)">${fresh ? view.frame.tracks.length : "—"}</span></div>`;
+  if ($("#ov-info").dataset.html !== infoHtml) { $("#ov-info").dataset.html = infoHtml; $("#ov-info").innerHTML = infoHtml; }
 
   let html = "", cls = "";
-  if (!state.sources.length) {
+  if (state.serverOnline === false) {
+    cls = "err";
+    html = `${icon("server-off")}<b>Нет связи с сервером</b>
+      <span>Состояние камеры неизвестно. Нарушения могут не отображаться.</span><span class="muted">Переподключаемся автоматически…</span>`;
+  } else if (!state.loaded) {
+    html = `${icon("refresh")}<b>Загрузка…</b><span class="muted">Получаем список камер и зон</span>`;
+  } else if (!state.sources.length) {
     html = `${icon("upload")}<b>Нет источников видео</b><span class="muted">Загрузите запись смены, чтобы начать</span>
       <button class="btn btn-primary" data-go="upload">${icon("upload")}Добавить видео</button>`;
   } else if (src?.status === "error") {
@@ -302,7 +315,8 @@ function renderOverlay() {
   } else if (src?.status === "running" && !fresh) {
     html = `${icon("activity")}<b>Запуск анализа…</b><span class="muted">Ждём первые кадры от нейросети</span>`;
   } else if (src && !fresh) {
-    html = `${icon("play")}<b>Анализ не запущен</b><span class="muted">${src.status === "stopped" ? "Видео обработано или анализ остановлен." : "Запустите анализ, чтобы видеть людей и тревоги."}</span>
+    html = `${icon(src.status === "stopped" ? "stop" : "play")}<b>${src.status === "stopped" ? "Обработка остановлена" : "Анализ не запущен"}</b>
+      <span class="muted">${src.status === "stopped" ? "Видео обработано или анализ остановлен. Нарушения сейчас НЕ контролируются." : "Запустите анализ, чтобы видеть людей и тревоги."}</span>
       <button class="btn btn-success" data-go="start">${icon("play")}Запустить анализ</button>`;
   }
   if (src && !zones.length && !html) {
@@ -370,9 +384,13 @@ function renderFeed() {
   $("#feed-count").textContent = `${unreviewed} без реакции`;
   if (view.feedFilter === "unreviewed") items = items.filter((e) => e.review_status === "unreviewed");
   if (view.feedFilter === "active") items = items.filter((e) => e.state === "active");
+  if (view.feedFilter === "camera") items = items.filter((e) => e.source_id === state.sourceId);
 
   if (!items.length) {
-    feed.innerHTML = `<div class="empty">${icon("check-circle")}<div>Тревог нет</div>
+    // «Тревог нет» показываем, только если сервер на связи — иначе это было бы неправдой.
+    feed.innerHTML = state.serverOnline === false
+      ? `<div class="empty err">${icon("server-off")}<div>Нет связи с сервером</div><div class="faint">Лента не обновляется</div></div>`
+      : `<div class="empty">${icon("check-circle")}<div>Тревог нет</div>
       <div class="faint">Новые нарушения появятся здесь мгновенно</div></div>`;
     return;
   }
@@ -381,18 +399,19 @@ function renderFeed() {
     const dur = ev.state === "active"
       ? `<span class="inc-dur" data-start="${esc(ev.started_at)}">идёт ${fmtDuration((Date.now() - new Date(ev.started_at)) / 1000)}</span>`
       : `<span>${fmtDuration(episodeSeconds(ev))}</span>`;
-    return `<div class="inc ${hot ? "hot" : "done"}" data-ev="${ev.id}">
+    const crit = ev.priority === "critical";
+    return `<div class="inc ${hot ? "hot" : "done"} ${crit ? "crit" : ""}" data-ev="${ev.id}">
       ${ev.thumbnail_url ? `<img class="inc-thumb" src="${esc(mediaUrl(ev.thumbnail_url))}" alt="" loading="lazy" />` : `<div class="inc-thumb ph">${icon("film")}</div>`}
       <div class="inc-body">
-        <div class="inc-top"><span class="inc-title">${esc(label("scenario", ev.scenario_type))}</span><span class="inc-time">${fmtTime(ev.started_at)}</span></div>
+        <div class="inc-top"><span class="inc-title">${crit ? "⚠ " : ""}${esc(label("scenario", ev.scenario_type))}</span><span class="inc-time">${fmtTime(ev.started_at)}</span></div>
         <div class="inc-where">${esc(ev.source_name || "—")} • ${esc(ev.zone_name || "без зоны")}</div>
-        <div class="inc-meta">${stateBadge(ev)}${reviewBadge(ev.review_status)}
+        <div class="inc-meta">${stateBadge(ev)}${reviewBadge(ev.review_status)}${priorityBadge(ev.priority)}
           ${dur}<span>· ${Math.round(ev.confidence * 100)}%</span></div>
       </div>
       ${hot ? `<div class="inc-actions">
         <button class="btn btn-sm btn-success" data-act="confirm">${icon("check")}Подтвердить</button>
         <button class="btn btn-sm" data-act="mark_false">${icon("x")}Ложное</button>
-        <button class="btn btn-sm" data-act="escalate" ${canDo("escalate", ev.review_status) ? "" : "disabled"}>${icon("arrow-up")}</button>
+        <button class="btn btn-sm" data-act="escalate" title="Передать мастеру смены" ${canDo("escalate", ev.review_status) ? "" : "disabled"}>${icon("arrow-up")}Мастеру</button>
       </div>` : ""}
     </div>`;
   }).join("");

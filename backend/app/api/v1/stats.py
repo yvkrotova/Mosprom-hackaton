@@ -8,6 +8,7 @@ from fastapi import APIRouter, Query, Request
 from app.api.deps import DbSession, SettingsDep
 from app.errors import UnprocessableError
 from app.models.base import as_utc
+from app.pipeline.detectors import detector_kind_for
 from app.schemas.stats import HealthOut, MetricsOut, StatsOut
 from app.services import stats_service
 
@@ -45,4 +46,6 @@ def get_metrics(db: DbSession, source_id: str | None = None) -> MetricsOut:
 
 @router.get("/health", response_model=HealthOut, summary="Состояние БД и источников")
 def get_health(request: Request, settings: SettingsDep) -> HealthOut:
-    return stats_service.get_health(request.app.state.session_factory, settings.detector)
+    return stats_service.get_health(
+        request.app.state.session_factory, detector_kind_for(settings.detector)
+    )

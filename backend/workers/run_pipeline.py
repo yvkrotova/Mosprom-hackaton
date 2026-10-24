@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # для зап
 
 from app.config import get_settings  # noqa: E402
 from app.pipeline.backend_client import BackendClient  # noqa: E402
+from app.pipeline.detectors import DETECTOR_CHOICES  # noqa: E402
 from app.pipeline.worker import run_worker  # noqa: E402
 
 
@@ -38,7 +39,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Воркер анализа видео LinQ Safety")
     parser.add_argument("--source-id", required=True)
     parser.add_argument("--backend-url", default=settings.backend_url)
-    parser.add_argument("--detector", default=settings.detector, choices=["mock", "replay", "linq"])
+    parser.add_argument("--detector", default=settings.detector, choices=DETECTOR_CHOICES)
     parser.add_argument("--realtime", action="store_true", help="Не быстрее реального времени")
     parser.add_argument("--stdin-control", action="store_true", help="Стоп по закрытию stdin")
     args = parser.parse_args()

@@ -1,30 +1,49 @@
-// Точка входа: вкладки, шапка с телеметрией, канал тревог, звук, загрузка видео.
+// Точка входа: вкладки, шапка с телеметрией, канал тревог, звук, тема, загрузка видео.
 import { initAnalytics, setAnalyticsVisible } from "./analytics.js";
 import { api } from "./api.js";
 import { openEvent } from "./event-modal.js";
 import { hydrateIcons, icon } from "./icons.js";
+import { initJournal, setJournalVisible } from "./journal.js";
 import { connectLive, initLive, setLiveVisible } from "./live.js";
 import { Socket } from "./sockets.js";
 import { sound } from "./sound.js";
 import {
-  currentSource, emit, loadZonesAndRules, on, patchSource, refreshSources, selectSource, setOperator, state,
+  currentSource, emit, loadZonesAndRules, on, patchSource, refreshSources, selectSource, setOperator, setServerOnline, state,
 } from "./state.js";
 import { initTerritory, setTerritoryVisible } from "./territory.js";
-import { $, $$, esc, fmtNum, label, openModal, promptModal, toast, toastError } from "./util.js";
+import { $, $$, esc, fmtNum, isLinq, label, openModal, promptModal, store, toast, toastError } from "./util.js";
 
-const TABS = { live: setLiveVisible, territory: setTerritoryVisible, analytics: setAnalyticsVisible };
+const TABS = { live: setLiveVisible, journal: setJournalVisible, territory: setTerritoryVisible, analytics: setAnalyticsVisible };
 let activeTab = "live";
+
+// Адрес вкладки — #name или #name?параметры (журнал хранит фильтры в адресе).
+const hashTab = () => location.hash.slice(1).split("?")[0];
 
 function showTab(name) {
   if (!TABS[name]) name = "live";
   activeTab = name;
+  if (hashTab() !== name) history.replaceState(null, "", "#" + name);
   for (const btn of $$(".tab")) btn.classList.toggle("active", btn.dataset.tab === name);
   for (const [tab, setVisible] of Object.entries(TABS)) {
     $(`#screen-${tab}`).hidden = tab !== name;
     setVisible(tab === name);
   }
-  if (location.hash !== "#" + name) history.replaceState(null, "", "#" + name);
   if (name === "live") hideAlarmBanner();
+}
+
+// --- Тема -------------------------------------------------------------------------------------
+
+function renderThemeButton() {
+  const light = document.documentElement.dataset.theme === "light";
+  $("#theme-btn").innerHTML = `${icon(light ? "moon" : "sun")}<span>${light ? "Тёмная" : "Светлая"}</span>`;
+}
+
+function toggleTheme() {
+  const next = document.documentElement.dataset.theme === "light" ? "dark" : "light";
+  document.documentElement.dataset.theme = next;
+  store("theme", next);
+  renderThemeButton();
+  emit("theme", next);
 }
 
 // --- Тревоги ---------------------------------------------------------------------------------
@@ -83,7 +102,7 @@ async function loadFeed() {
     for (const ev of page.items) state.feed.set(ev.id, ev);
     emit("feed-loaded");
   } catch (err) {
-    toastError(err);
+    if (err.code !== "NETWORK") toastError(err); // обрыв связи показывает баннер
   }
 }
 
@@ -99,23 +118,33 @@ function setChip(id, cls, value) {
 async function pollHealth() {
   try {
     state.health = await api.health();
+    setServerOnline(true);
     const bad = state.health.sources.filter((s) => ["error", "disconnected"].includes(s.status));
     setChip("#chip-health", state.health.status === "ok" ? "ok" : "bad");
     $("#chip-health").title = state.health.db !== "ok" ? "База данных недоступна"
       : bad.length ? `Проблемы: ${bad.map((s) => `${s.name} — ${label("status", s.status)}`).join("; ")}` : "Все системы в норме";
     $("#chip-health span:last-child").textContent = state.health.db !== "ok" ? "БД недоступна" : bad.length ? `Сбой: ${bad.length}` : "Система";
-    const kind = state.health.detector_kind;
-    setChip("#chip-detector", kind === "linq" ? "ok" : "warn", label("detector", kind));
+    renderDetectorChip();
   } catch {
+    setServerOnline(false);
     setChip("#chip-health", "bad");
-    $("#chip-health span:last-child").textContent = "Backend недоступен";
+    $("#chip-health span:last-child").textContent = "Нет связи с сервером";
   }
+}
+
+// Детектор берём из замера текущей камеры (что реально работает), иначе — из настройки сервера.
+function renderDetectorChip() {
+  const kind = state.metrics?.sources?.[0]?.detector_kind || state.health?.detector_kind;
+  if (!kind) return;
+  setChip("#chip-detector", isLinq(kind) ? "ok" : "warn", label("detector", kind));
+  $("#chip-detector").title = isLinq(kind) ? "Нейросеть на ускорителе LinQ" : "Внимание: детектор работает НЕ на LinQ";
 }
 
 async function pollMetrics() {
   if (!state.sourceId) return;
   try {
     state.metrics = await api.metrics(state.sourceId);
+    renderDetectorChip();
     const s = state.metrics.sources[0];
     const running = currentSource()?.status === "running";
     if (!running || !liveFps) setChip("#chip-fps", s?.fps ? "ok" : null, fmtNum(s?.fps, 1));
@@ -217,15 +246,37 @@ function openUpload() {
 
 // --- Запуск -----------------------------------------------------------------------------------
 
+// Справочники (сценарии, камеры, зоны, правила). Повторяется, когда сервер снова на связи.
+let bootstrapped = false;
+async function bootstrap() {
+  try {
+    [state.scenarios] = await Promise.all([api.scenarios(), refreshSources()]);
+    await Promise.all(state.sources.map((s) => loadZonesAndRules(s.id)));
+    bootstrapped = true;
+    state.loaded = true;
+    emit("loaded");
+  } catch (err) {
+    if (err.code !== "NETWORK") toastError(err);
+  }
+}
+
 async function main() {
   hydrateIcons(document);
+  renderThemeButton();
+  $("#theme-btn").onclick = toggleTheme;
   initSound();
   initLive($("#screen-live"));
+  initJournal($("#screen-journal"));
   initTerritory($("#screen-territory"));
   initAnalytics($("#screen-analytics"));
 
   for (const btn of $$(".tab")) btn.onclick = () => showTab(btn.dataset.tab);
   on("go-tab", showTab);
+  on("server", (online) => {
+    $("#offline-banner").hidden = online;
+    document.body.classList.toggle("offline", !online);
+    if (online && !bootstrapped) bootstrap().then(() => { connectLive(); loadFeed(); });
+  });
   $("#upload-btn").onclick = openUpload;
   $("#operator-name").textContent = state.operator;
   $("#operator-btn").onclick = async () => {
@@ -237,13 +288,11 @@ async function main() {
   on("feed-loaded", updateTitle);
   on("source-selected", (id) => { loadZonesAndRules(id).catch(toastError); pollMetrics(); });
 
-  try {
-    [state.scenarios] = await Promise.all([api.scenarios(), refreshSources()]);
-    await Promise.all(state.sources.map((s) => loadZonesAndRules(s.id)));
-  } catch (err) {
-    toastError(err);
-  }
-  showTab(location.hash.slice(1) || "live");
+  await bootstrap();
+  showTab(hashTab() || "live");
+  // Ссылка на карточку события: #live?event=<id> (или любая вкладка с ?event=).
+  const linked = new URLSearchParams(location.hash.split("?")[1] || "").get("event");
+  if (linked) openEvent(linked);
   connectLive();
   loadFeed();
   pollHealth();
@@ -259,8 +308,9 @@ async function main() {
       chip.classList.toggle("ok", connected);
       chip.classList.toggle("bad", !connected);
       chip.innerHTML = `${icon(connected ? "wifi" : "wifi-off")}<span>${connected ? "Тревоги онлайн" : "Тревоги: переподключение…"}</span>`;
-      // После переподключения догружаем то, что могли пропустить.
+      // После переподключения догружаем то, что могли пропустить; при обрыве сразу проверяем сервер.
       if (connected) { loadFeed(); refreshSources().catch(() => {}); }
+      pollHealth();
     },
   });
 }

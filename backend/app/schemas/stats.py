@@ -46,8 +46,12 @@ class SourceMetrics(BaseModel):
     fps: float | None = Field(description="Фактическая частота обработки, кадр/с")
     inference_ms_avg: float | None
     inference_ms_p95: float | None
+    preprocess_ms_avg: float | None = Field(None, description="Подготовка входа сети, мс")
+    postprocess_ms_avg: float | None = Field(None, description="Декодирование выхода и NMS, мс")
     frames_processed: int | None
-    detector_kind: str | None
+    detector_kind: str | None = Field(
+        description="mock | replay | onnx_cpu (локальный CPU, не LinQ) | linq"
+    )
     model_version: str | None
 
 

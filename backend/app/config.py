@@ -22,8 +22,14 @@ class Settings(BaseSettings):
     # Каталог фронтенда (index.html): backend отдаёт его на http://localhost:8000/.
     frontend_dir: Path | None = BACKEND_DIR.parent / "frontend"
 
-    detector: Literal["mock", "replay", "linq"] = "mock"
+    detector: Literal["mock", "replay", "onnx", "linq"] = "mock"
     replay_path: str = ""
+    # YOLOv8 (onnx и linq): путь к модели, размер входа, пороги, классы через запятую.
+    model_path: str = "./models/yolov8s.onnx"
+    model_input_size: int = 640
+    conf_threshold: float = 0.35
+    iou_threshold: float = 0.45
+    detect_classes: str = "person"
     # Видеофайл анализируется не быстрее реального времени (для демо); иначе — как можно быстрее.
     realtime_playback: bool = False
 
@@ -44,6 +50,10 @@ class Settings(BaseSettings):
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    @property
+    def detect_class_list(self) -> list[str]:
+        return [c.strip() for c in self.detect_classes.split(",") if c.strip()]
 
     @property
     def videos_dir(self) -> Path:

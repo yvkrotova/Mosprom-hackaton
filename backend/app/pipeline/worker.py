@@ -11,7 +11,7 @@ from typing import Any
 
 from app.config import Settings
 from app.pipeline.backend_client import BackendClient
-from app.pipeline.detectors import build_detector
+from app.pipeline.detectors import build_detector, detector_kind_for
 from app.pipeline.detectors.replay import ReplayDetector
 from app.pipeline.interfaces import Detector, Frame, FrameSource
 from app.pipeline.live import LiveSender, frame_meta
@@ -75,7 +75,12 @@ def run_worker(
     realtime: bool = False,
 ) -> int:
     """Возвращает код выхода процесса. Любая ошибка детектора или источника -> status=error."""
-    state: dict[str, Any] = {"stats": None, "model_version": None}
+    state: dict[str, Any] = {
+        "stats": None,
+        "model_version": None,
+        # До создания детектора — по настройке; потом — Detector.kind (onnx -> onnx_cpu).
+        "detector_kind": detector_kind_for(detector_kind),
+    }
 
     def send_heartbeat(status: str, error: str | None) -> None:
         stats: PipelineStats | None = state["stats"]
@@ -85,9 +90,11 @@ def run_worker(
             "fps": stats.fps if stats else None,
             "inference_ms_avg": stats.inference_ms_avg if stats else None,
             "inference_ms_p95": stats.inference_ms_p95 if stats else None,
+            "preprocess_ms_avg": stats.preprocess_ms_avg if stats else None,
+            "postprocess_ms_avg": stats.postprocess_ms_avg if stats else None,
             "frames_processed": stats.frames_processed if stats else 0,
             "model_version": state["model_version"],
-            "detector_kind": detector_kind,
+            "detector_kind": state["detector_kind"],
             "error": error,
         }
         try:
@@ -117,6 +124,7 @@ def run_worker(
             analysis_fps=config.source.analysis_fps,
         )
         state["model_version"] = detector.model_version
+        state["detector_kind"] = detector.kind
         frames = build_frame_source(config, detector, realtime)
         pipeline = Pipeline(config, detector, client)
         state["stats"] = pipeline.stats

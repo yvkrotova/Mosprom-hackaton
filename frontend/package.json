@@ -1,0 +1,11 @@
+{
+  "name": "linq-safety-frontend",
+  "private": true,
+  "type": "module",
+  "description": "Фронтенд LinQ Safety: статические ES-модули без сборки, их раздаёт backend на http://localhost:8000/",
+  "scripts": {
+    "check": "node scripts/check.mjs",
+    "lint": "node scripts/check.mjs",
+    "build": "node scripts/check.mjs"
+  }
+}

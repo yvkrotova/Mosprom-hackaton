@@ -4,11 +4,16 @@ import json
 from pathlib import Path
 
 import cv2
+import numpy as np
 import pytest
 
 from app.db import make_engine, make_session_factory
 from app.models import Rule, Source, Zone
+from app.pipeline.detectors.mock import MockDetector
+from app.pipeline.interfaces import Frame
 from tests.fixtures.make_detections_sample import SAMPLE_PATH
+from tools.benchmark_detector import benchmark
+from tools.export_detections import export
 from tools.make_demo_video import make_demo_video
 from tools.seed import seed
 from tools.validate_detections import main as validate_main
@@ -107,3 +112,19 @@ def test_seeded_source_works_with_api(client, settings, demo_video):
     assert len(client.get(f"/api/v1/sources/{result.source_id}/zones").json()) == 1
     assert client.get("/api/v1/rules").json()[0]["scenario_type"] == "danger_zone"
     assert client.get(f"/api/v1/sources/{result.source_id}/preview").status_code == 200
+
+
+def test_export_detections_writes_valid_jsonl(tmp_path, demo_video):
+    out = tmp_path / "dets.jsonl"
+    frames = export(demo_video, out, MockDetector(), fps=5, max_frames=40)
+    assert frames == 40
+    report = validate_file(out)
+    assert report.ok and report.frames == 40 and report.labels["person"] > 0
+
+
+def test_benchmark_detector_summary(demo_video):
+    frames = [Frame("b", i, i / 10, 320, 180, np.zeros((180, 320, 3), np.uint8)) for i in range(5)]
+    result = benchmark(MockDetector(), frames, warmup=2, runs=10)
+    assert result["detector_kind"] == "mock" and result["frames"] == 10
+    assert set(result["inference_ms"]) == {"avg", "p50", "p95", "min", "max"}
+    assert result["preprocess_ms"] is None and result["fps"] > 0

@@ -115,6 +115,25 @@ def test_health_ok(client, make_source):
     assert body["sources"][0]["status"] == "running"
 
 
+def test_onnx_detector_is_reported_as_cpu_not_linq(client, app, internal_headers, make_source):
+    """DETECTOR=onnx видно как onnx_cpu в /health и /metrics, вместе с пре- и постпроцессингом."""
+    previous = app.state.settings.detector
+    app.state.settings.detector = "onnx"
+    try:
+        assert client.get("/api/v1/health").json()["detector_kind"] == "onnx_cpu"
+    finally:
+        app.state.settings.detector = previous
+    src = make_source(status="running")
+    client.post("/internal/heartbeat", headers=internal_headers, json={
+        "source_id": src, "status": "running", "fps": 12.5, "inference_ms_avg": 70.1,
+        "inference_ms_p95": 80.2, "preprocess_ms_avg": 3.1, "postprocess_ms_avg": 1.2,
+        "frames_processed": 40, "detector_kind": "onnx_cpu",
+        "model_version": "yolov8s-onnx"})  # fmt: skip
+    (m,) = client.get("/api/v1/metrics").json()["sources"]
+    assert m["detector_kind"] == "onnx_cpu"
+    assert (m["preprocess_ms_avg"], m["postprocess_ms_avg"]) == (3.1, 1.2)
+
+
 def test_health_shows_disconnected(client, app, make_source):
     """Тест 7: нет heartbeat дольше таймаута -> источник disconnected в /health."""
     src = make_source(status="running", last_heartbeat_at=T)

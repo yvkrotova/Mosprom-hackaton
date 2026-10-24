@@ -12,12 +12,19 @@ export const state = {
   health: null,
   metrics: null,
   wsConnected: false,
+  serverOnline: null, // null — ещё не знаем (загрузка), true/false — ответил ли backend
+  loaded: false, // справочники (камеры, зоны, правила) загружены
   operator: stored("operator", "Оператор смены"),
 };
 
 const bus = new EventTarget();
 export const emit = (name, detail) => bus.dispatchEvent(new CustomEvent(name, { detail }));
-export const on = (name, fn) => bus.addEventListener(name, (e) => fn(e.detail));
+// Возвращает функцию отписки (нужна окнам, которые живут недолго).
+export const on = (name, fn) => {
+  const handler = (e) => fn(e.detail);
+  bus.addEventListener(name, handler);
+  return () => bus.removeEventListener(name, handler);
+};
 
 export const currentSource = () => state.sources.find((s) => s.id === state.sourceId) || null;
 export const sourceById = (id) => state.sources.find((s) => s.id === id) || null;
@@ -51,6 +58,12 @@ export async function loadZonesAndRules(sourceId) {
   state.zones[sourceId] = zones;
   state.rules[sourceId] = rules;
   emit("zones", sourceId);
+}
+
+export function setServerOnline(online) {
+  if (state.serverOnline === online) return;
+  state.serverOnline = online;
+  emit("server", online);
 }
 
 export function setOperator(name) {

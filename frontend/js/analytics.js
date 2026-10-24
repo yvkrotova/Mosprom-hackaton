@@ -1,24 +1,16 @@
-// Вкладка «Аналитика и отчёты»: показатели, замеры LinQ, графики, журнал с фильтрами, CSV и печать.
+// Вкладка «Статистика»: показатели, замеры скорости детектора, графики по типам, камерам, зонам и часам.
 import { api } from "./api.js";
 import { barChart, donutChart, hbarChart } from "./charts.js";
-import { mediaUrl } from "./config.js";
-import { openEvent, priorityBadge, reviewBadge, stateBadge } from "./event-modal.js";
 import { hydrateIcons, icon } from "./icons.js";
-import { on, state } from "./state.js";
-import {
-  $, $$, episodeSeconds, esc, fmtDateTime, fmtDuration, fmtNum, label, pct, toast, toastError,
-} from "./util.js";
+import { emit, on, state } from "./state.js";
+import { $, $$, esc, fmtDateTime, fmtDuration, fmtNum, isLinq, label, pct, episodeSeconds } from "./util.js";
 
-const PAGE = 20;
 const PERIODS = { today: "Сегодня", day: "24 часа", week: "7 дней", all: "Всё время" };
 const REVIEW_COLORS = { unreviewed: "#f59e0b", confirmed: "#ef4444", false_positive: "#64748b", escalated: "#a78bfa" };
 
 const an = {
   period: "today",
   sourceId: "",
-  journal: { scenario_type: "", zone_id: "", state: "", review_status: "", priority: "" },
-  offset: 0,
-  total: 0,
   visible: false,
   stale: true,
 };
@@ -39,75 +31,47 @@ export function initAnalytics(root) {
       <select class="select" id="an-source" aria-label="Камера"></select>
       <div class="tabs-spacer"></div>
       <button class="btn btn-sm" id="an-refresh"><i data-icon="refresh"></i>Обновить</button>
+      <button class="btn btn-sm" id="an-journal"><i data-icon="list"></i>Открыть в журнале</button>
       <button class="btn btn-sm" id="an-print"><i data-icon="printer"></i>Печать отчёта</button>
-      <button class="btn btn-sm btn-primary" id="an-csv"><i data-icon="download"></i>Скачать CSV</button>
     </div>
+    <div id="an-error"></div>
 
     <div class="kpis" id="kpis"></div>
 
     <div class="card" style="margin-bottom:18px">
       <div class="card-head">
-        <div><h3 class="card-title"><i data-icon="cpu"></i>Замеры скорости на LinQ</h3>
-          <p class="card-sub">Последние значения от модуля анализа. Для отчёта о скорости запускайте анализ без режима «Реальное время».</p></div>
-        <span id="linq-detector"></span>
+        <div><h3 class="card-title"><i data-icon="cpu"></i>Замеры скорости детектора</h3>
+          <p class="card-sub">Последний heartbeat модуля анализа. Для замера максимальной скорости запускайте анализ без режима «Реальное время».</p></div>
+        <span id="det-kind"></span>
       </div>
-      <div class="linq-panel" id="linq-panel"></div>
+      <div id="det-warning"></div>
+      <div class="linq-panel" id="det-panel"></div>
     </div>
 
     <div class="charts">
-      <div class="card"><h3 class="card-title" style="margin-bottom:12px"><i data-icon="activity"></i>Нарушения по часам</h3><div id="ch-hours"></div></div>
+      <div class="card"><h3 class="card-title" style="margin-bottom:12px"><i data-icon="activity"></i>Нарушения по часам (местное время)</h3><div id="ch-hours"></div></div>
       <div class="card"><h3 class="card-title" style="margin-bottom:12px"><i data-icon="check-circle"></i>Результаты проверки</h3><div id="ch-review"></div></div>
     </div>
     <div class="charts-3">
       <div class="card"><h3 class="card-title" style="margin-bottom:12px"><i data-icon="target"></i>По зонам</h3><div id="ch-zones"></div></div>
       <div class="card"><h3 class="card-title" style="margin-bottom:12px"><i data-icon="video"></i>По камерам</h3><div id="ch-sources"></div></div>
       <div class="card"><h3 class="card-title" style="margin-bottom:12px"><i data-icon="alert-triangle"></i>По типам нарушений</h3><div id="ch-types"></div></div>
-    </div>
-
-    <div class="card">
-      <div class="card-head">
-        <h3 class="card-title"><i data-icon="database"></i>Журнал нарушений</h3>
-        <span class="muted" id="journal-total"></span>
-      </div>
-      <div class="filters no-print">
-        <select class="select" data-f="scenario_type"><option value="">Все типы</option>
-          ${Object.entries({ danger_zone: 0, fall_immobility: 0 }).map(([k]) => `<option value="${k}">${label("scenario", k)}</option>`).join("")}</select>
-        <select class="select" data-f="zone_id"><option value="">Все зоны</option></select>
-        <select class="select" data-f="state"><option value="">Любое состояние</option><option value="active">Идёт</option><option value="ended">Завершено</option></select>
-        <select class="select" data-f="review_status"><option value="">Любая проверка</option>
-          ${["unreviewed", "confirmed", "false_positive", "escalated"].map((k) => `<option value="${k}">${label("review", k)}</option>`).join("")}</select>
-        <select class="select" data-f="priority"><option value="">Любой приоритет</option>
-          ${["low", "medium", "high", "critical"].map((k) => `<option value="${k}">${label("priority", k)}</option>`).join("")}</select>
-      </div>
-      <div class="table-wrap"><table class="table">
-        <thead><tr><th>Кадр</th><th>Начало</th><th>Камера / зона</th><th>Нарушение</th><th>Длительность</th><th>Уверенность</th><th>Состояние</th><th>Проверка</th></tr></thead>
-        <tbody id="journal"></tbody>
-      </table></div>
-      <div class="pager no-print">
-        <span id="pager-info"></span>
-        <div style="display:flex;gap:6px">
-          <button class="btn btn-sm" id="prev-page"><i data-icon="chevron-left"></i>Назад</button>
-          <button class="btn btn-sm" id="next-page">Вперёд<i data-icon="chevron-right"></i></button>
-        </div>
-      </div>
     </div>`;
   hydrateIcons(root);
 
   for (const btn of $$("[data-period]", root)) {
-    btn.onclick = () => { an.period = btn.dataset.period; an.offset = 0; refresh(); };
+    btn.onclick = () => { an.period = btn.dataset.period; refresh(); };
   }
-  $("#an-source").onchange = (e) => { an.sourceId = e.target.value; an.journal.zone_id = ""; an.offset = 0; refresh(); };
-  for (const sel of $$("[data-f]", root)) {
-    sel.onchange = () => { an.journal[sel.dataset.f] = sel.value; an.offset = 0; loadJournal(); };
-  }
+  $("#an-source").onchange = (e) => { an.sourceId = e.target.value; refresh(); };
   $("#an-refresh").onclick = refresh;
   $("#an-print").onclick = printReport;
-  $("#an-csv").onclick = exportCsv;
-  $("#prev-page").onclick = () => { an.offset = Math.max(0, an.offset - PAGE); loadJournal(); };
-  $("#next-page").onclick = () => { an.offset += PAGE; loadJournal(); };
+  $("#an-journal").onclick = () => {
+    const params = new URLSearchParams({ ...periodRange(an.period), ...(an.sourceId ? { source_id: an.sourceId } : {}) });
+    history.replaceState(null, "", "#journal?" + params);
+    emit("go-tab", "journal");
+  };
 
   on("sources", renderSourceFilter);
-  on("zones", renderZoneFilter);
   on("event", () => { an.stale = true; if (an.visible) scheduleRefresh(); });
 }
 
@@ -122,29 +86,25 @@ function scheduleRefresh() {
   refreshTimer = setTimeout(refresh, 1500); // пачка WS-событий -> одно обновление
 }
 
-function baseQuery() {
-  return { ...periodRange(an.period), source_id: an.sourceId || undefined };
-}
-
 async function refresh() {
   an.stale = false;
   $$("[data-period]").forEach((b) => b.classList.toggle("active", b.dataset.period === an.period));
   renderSourceFilter();
-  renderZoneFilter();
-  const q = baseQuery();
+  const q = { ...periodRange(an.period), source_id: an.sourceId || undefined };
   try {
     const [stats, metrics, sample] = await Promise.all([
       api.stats(q),
       api.metrics(an.sourceId || undefined),
       api.events({ ...q, limit: 500 }),
     ]);
+    $("#an-error").innerHTML = "";
     renderKpis(stats, metrics, sample);
-    renderLinq(metrics);
+    renderDetector(metrics);
     renderCharts(stats);
   } catch (err) {
-    toastError(err);
+    // Ошибка не должна выглядеть как «нарушений нет»: показываем её на месте данных.
+    $("#an-error").innerHTML = `<div class="notice notice-err" style="margin-bottom:16px">${icon("alert-triangle")}<span>Статистика не загружена: ${esc(err.message)}</span></div>`;
   }
-  loadJournal();
 }
 
 // --- Показатели --------------------------------------------------------------------------------
@@ -162,30 +122,37 @@ function renderKpis(stats, metrics, sample) {
       <div class="kpi-note" style="color:${noteColor}">${note}</div></div>
       <div class="kpi-ico ${color}">${icon(ico)}</div></div>`;
   $("#kpis").innerHTML = [
-    kpi("Нарушений за период", stats.total, active ? `${active} идёт прямо сейчас` : "активных нет", "siren", "red", active ? "#fca5a5" : undefined),
-    kpi("Ждут реакции оператора", rv.unreviewed, rv.unreviewed ? "требуется проверка" : "все проверены", "bell", "amber", rv.unreviewed ? "#fcd34d" : "#6ee7b7"),
-    kpi("Точность по проверке", pct(precision), reviewed ? `${rv.confirmed} подтверждено · ${rv.false_positive} ложных` : "нет проверенных событий", "check-circle", "green"),
+    kpi("Нарушений за период", stats.total, active ? `${active} идёт прямо сейчас` : "активных нет", "siren", "red", active ? "var(--red-text)" : undefined),
+    kpi("Ждут реакции оператора", rv.unreviewed, rv.unreviewed ? "требуется проверка" : "все проверены", "bell", "amber", rv.unreviewed ? "var(--amber-text)" : "var(--green-text)"),
+    kpi("Подтверждено", rv.confirmed, `передано мастеру: ${rv.escalated}`, "check", "red"),
+    kpi("Ложных срабатываний", rv.false_positive, reviewed ? `точность по проверке ${pct(precision)}` : "нет проверенных событий", "x", "green"),
     kpi("Среднее время в зоне", avgDur == null ? "—" : fmtDuration(avgDur), ended.length ? `по ${ended.length} завершённым эпизодам` : "нет завершённых эпизодов", "clock", "purple"),
-    kpi("Тревог на эпизод", ape == null ? "—" : fmtNum(ape, 2), ape == null ? "нет данных" : ape <= 1.0001 ? "повторы подавлены" : "есть повторные тревоги", "shield", "blue", ape != null && ape <= 1.0001 ? "#6ee7b7" : undefined),
+    kpi("Тревог на эпизод", ape == null ? "—" : fmtNum(ape, 2), ape == null ? "нет данных" : ape <= 1.0001 ? "повторы подавлены" : "есть повторные тревоги", "shield", "blue", ape != null && ape <= 1.0001 ? "var(--green-text)" : undefined),
   ].join("");
 }
 
-function renderLinq(metrics) {
+function renderDetector(metrics) {
   const s = metrics.sources.find((x) => x.fps != null) || metrics.sources[0] || {};
   const l = metrics.latency;
-  $("#linq-detector").innerHTML = s.detector_kind
-    ? `<span class="badge ${s.detector_kind === "linq" ? "badge-green" : "badge-amber"}">${esc(label("detector", s.detector_kind))}</span>`
+  const kind = s.detector_kind || state.health?.detector_kind;
+  $("#det-kind").innerHTML = kind
+    ? `<span class="badge ${isLinq(kind) ? "badge-green" : "badge-amber"}">${esc(label("detector", kind))}</span>`
+    : "";
+  $("#det-warning").innerHTML = kind && !isLinq(kind)
+    ? `<div class="notice notice-warn" style="margin-bottom:12px">${icon("info")}<span>Это <b>не замер на LinQ</b>: детектор «${esc(label("detector", kind))}». ${kind === "onnx_cpu" ? "YOLOv8s считается на процессоре этого компьютера." : "Нейросеть не работает, детекции подставлены."} Цифры для LinQ появятся при DETECTOR=linq.</span></div>`
     : "";
   const m = (title, value, note) => `<div class="metric"><div class="metric-label">${title}</div><div class="metric-value">${value}</div><div class="metric-note">${note}</div></div>`;
-  $("#linq-panel").innerHTML = [
+  $("#det-panel").innerHTML = [
     m("Скорость обработки", fmtNum(s.fps, 1, " FPS"), s.source_name ? esc(s.source_name) : "анализ ещё не запускался"),
-    m("Инференс, среднее", fmtNum(s.inference_ms_avg, 1, " мс"), "время нейросети на кадр"),
+    m("Инференс, среднее", fmtNum(s.inference_ms_avg, 1, " мс"), "только вызов нейросети"),
     m("Инференс, p95", fmtNum(s.inference_ms_p95, 1, " мс"), "95% кадров быстрее"),
-    m("Кадров обработано", s.frames_processed ?? "—", esc(s.model_version || "—")),
+    m("Пре- / постпроцессинг", s.preprocess_ms_avg == null ? "—" : `${fmtNum(s.preprocess_ms_avg, 1)} / ${fmtNum(s.postprocess_ms_avg, 1)} мс`, "letterbox · декодирование и NMS"),
+    m("Кадров обработано", s.frames_processed ?? "—", esc(s.model_version || "модель —")),
     m("Обнаружение (видео)", fmtNum(l.detection_delay_video_ts_s_avg, 2, " с"), "от входа в зону до подтверждения"),
     m("Обнаружение (реально)", fmtNum(l.detection_delay_real_s_avg, 2, " с"), "честно в режиме реального времени"),
-    m("Оповещение", fmtNum(l.notify_delay_ms_avg, 1, " мс"), `p95 ${fmtNum(l.notify_delay_ms_p95, 1, " мс")} · до отправки тревоги`),
-    m("Эпизодов в замере", l.events_count, "все события выбранных камер"),
+    m("Задержка уведомления", fmtNum(l.notify_delay_ms_avg, 1, " мс"), `p95 ${fmtNum(l.notify_delay_ms_p95, 1, " мс")} · до отправки тревоги`),
+    m("Тревог на эпизод", fmtNum(l.alerts_per_episode, 2), `эпизодов в замере: ${l.events_count}`),
+    m("Обновлено", s.ts ? fmtDateTime(s.ts) : "—", "время последнего замера"),
   ].join("");
 }
 
@@ -214,93 +181,11 @@ function renderCharts(stats) {
   hbarChart($("#ch-types"), stats.by_scenario_type.map((s) => ({ label: label("scenario", s.key), value: s.count })), { color: "var(--red)" });
 }
 
-// --- Фильтры ---------------------------------------------------------------------------------
-
 function renderSourceFilter() {
   const sel = $("#an-source");
   if (!sel) return;
   sel.innerHTML = `<option value="">Все камеры</option>` + state.sources.map((s) => `<option value="${s.id}">${esc(s.name)}</option>`).join("");
   sel.value = an.sourceId;
-}
-
-function renderZoneFilter() {
-  const sel = $('[data-f="zone_id"]');
-  if (!sel) return;
-  const zones = an.sourceId ? state.zones[an.sourceId] || [] : Object.values(state.zones).flat();
-  sel.innerHTML = `<option value="">Все зоны</option>` + zones.map((z) => `<option value="${z.id}">${esc(z.name)}</option>`).join("");
-  sel.value = an.journal.zone_id;
-}
-
-function journalQuery(extra = {}) {
-  const q = { ...baseQuery(), ...extra };
-  for (const [k, v] of Object.entries(an.journal)) if (v) q[k] = v;
-  return q;
-}
-
-// --- Журнал ----------------------------------------------------------------------------------
-
-async function loadJournal() {
-  let page;
-  try {
-    page = await api.events(journalQuery({ limit: PAGE, offset: an.offset }));
-  } catch (err) {
-    return toastError(err);
-  }
-  an.total = page.total;
-  $("#journal-total").textContent = `${page.total} событий`;
-  $("#pager-info").textContent = page.total ? `${an.offset + 1}–${an.offset + page.items.length} из ${page.total}` : "";
-  $("#prev-page").disabled = an.offset === 0;
-  $("#next-page").disabled = an.offset + PAGE >= page.total;
-  const body = $("#journal");
-  body.innerHTML = page.items.length
-    ? page.items.map((e) => `<tr data-ev="${e.id}">
-        <td>${e.thumbnail_url ? `<img src="${esc(mediaUrl(e.thumbnail_url))}" alt="" loading="lazy" />` : icon("film")}</td>
-        <td class="mono">${fmtDateTime(e.started_at)}</td>
-        <td>${esc(e.source_name || "удалена")}<div class="sub">${esc(e.zone_name || "без зоны")}</div></td>
-        <td>${esc(label("scenario", e.scenario_type))}<div class="sub">${priorityBadge(e.priority)}</div></td>
-        <td class="mono">${e.state === "active" ? "идёт" : fmtDuration(episodeSeconds(e))}</td>
-        <td class="mono">${Math.round(e.confidence * 100)}%</td>
-        <td>${stateBadge(e)}</td>
-        <td>${reviewBadge(e.review_status)}</td></tr>`).join("")
-    : `<tr><td colspan="8"><div class="empty">${icon("check-circle")}<div>За выбранный период нарушений нет</div></div></td></tr>`;
-  for (const row of $$("[data-ev]", body)) row.onclick = () => openEvent(row.dataset.ev);
-}
-
-// --- Экспорт -----------------------------------------------------------------------------------
-
-async function exportCsv() {
-  const btn = $("#an-csv");
-  btn.disabled = true;
-  try {
-    const rows = [];
-    for (let offset = 0; offset < 10000; offset += 500) {
-      const page = await api.events(journalQuery({ limit: 500, offset }));
-      rows.push(...page.items);
-      if (offset + 500 >= page.total) break;
-    }
-    const header = ["ID", "Начало", "Конец", "Длительность, с", "Камера", "Зона", "Нарушение", "Приоритет", "Состояние",
-      "Проверка", "Уверенность, %", "Трек", "Подтверждено за (видео), с", "Модель", "Кадр"];
-    const cell = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
-    const lines = rows.map((e) => [
-      e.id, fmtDateTime(e.started_at), e.ended_at ? fmtDateTime(e.ended_at) : "", episodeSeconds(e).toFixed(1).replace(".", ","),
-      e.source_name, e.zone_name, label("scenario", e.scenario_type), label("priority", e.priority), label("state", e.state),
-      label("review", e.review_status), Math.round(e.confidence * 100), e.track_id,
-      (e.video_ts_detected - e.video_ts_start).toFixed(2).replace(".", ","), e.model_version,
-      e.thumbnail_url ? new URL(mediaUrl(e.thumbnail_url), location.href).href : "",
-    ].map(cell).join(";"));
-    // BOM и «;» — чтобы русский Excel открыл файл без мастера импорта.
-    const blob = new Blob(["﻿" + [header.map(cell).join(";"), ...lines].join("\r\n")], { type: "text/csv;charset=utf-8" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = `linq_safety_${new Date().toISOString().slice(0, 10)}.csv`;
-    a.click();
-    URL.revokeObjectURL(a.href);
-    toast(`Выгружено событий: ${rows.length}`, "success", { timeout: 2500 });
-  } catch (err) {
-    toastError(err);
-  } finally {
-    btn.disabled = false;
-  }
 }
 
 function printReport() {
