@@ -17,7 +17,10 @@ export function h(html) {
 // --- Подписи -------------------------------------------------------------------------------
 
 export const LABELS = {
-  scenario: { danger_zone: "Человек в опасной зоне", fall_immobility: "Падение / неподвижность" },
+  scenario: {
+    danger_zone: "Человек в опасной зоне", run_fast_movement: "Бег / резкое перемещение",
+    fall_immobility: "Падение / неподвижность",
+  },
   state: { active: "Идёт", ended: "Завершено" },
   review: { unreviewed: "Не проверено", confirmed: "Подтверждено", false_positive: "Ложное", escalated: "Передано мастеру" },
   priority: { low: "Низкий", medium: "Средний", high: "Высокий", critical: "Критический" },
@@ -25,14 +28,21 @@ export const LABELS = {
   action: { confirm: "Подтвердил", mark_false: "Отметил ложным", escalate: "Передал мастеру", comment: "Комментарий", reset: "Сбросил проверку" },
   detector: {
     mock: "MOCK · заглушка", replay: "REPLAY · файл детекций",
-    onnx_cpu: "ONNX · CPU (не LinQ)", onnx: "ONNX · CPU (не LinQ)", linq: "LinQ NPU",
+    onnx_cpu: "ONNX · CPU (не LinQ)", onnx: "ONNX · CPU (не LinQ)",
+    linq: "LinQ TPU", linq_tpu: "LinQ TPU", linq_tpu_replay: "LinQ TPU (запись)", onnx_cpu_replay: "CPU (запись)",
   },
 };
 
 export const label = (group, key) => LABELS[group]?.[key] ?? key ?? "—";
 
-// Настоящий замер на ускорителе — только detector_kind = "linq". Остальное помечаем явно.
-export const isLinq = (kind) => kind === "linq";
+// Инференс на ускорителе — detector_kind linq / linq_tpu / linq_tpu_replay (запись с TPU). Остальное — явно «не LinQ».
+export const isLinq = (kind) => typeof kind === "string" && kind.startsWith("linq");
+
+// Иконка типа нарушения.
+export const SCENARIO_ICONS = { danger_zone: "siren", run_fast_movement: "run", fall_immobility: "alert-triangle" };
+
+// Скорость сценария «бег»: «ростов человека в секунду», не м/с.
+export const fmtSpeed = (v) => (v == null ? "—" : `${fmtNum(v, 1)} роста/с`);
 
 // Та же таблица переходов, что в backend (docs/CONTRACT.md).
 export const TRANSITIONS = {

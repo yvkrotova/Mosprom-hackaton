@@ -289,6 +289,13 @@ input[type="range"] { accent-color: var(--green); }
 .zone-status.alarm { color: #fca5a5; animation: blink 1s step-end infinite; }
 @keyframes blink { 50% { opacity: 0.45; } }
 
+.tracks-panel { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; min-height: 30px; align-items: center; font-size: 12px; }
+.track-chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 9px; border-radius: 8px; border: 1px solid var(--border); background: var(--card-2); color: var(--text); font: 12px var(--mono); cursor: pointer; }
+.track-chip b { font-weight: 600; color: var(--muted); }
+.track-chip.warn { border-color: var(--amber); } .track-chip.warn b { color: var(--amber-text); }
+.track-chip.bad { border-color: var(--red); background: var(--red-soft); } .track-chip.bad b { color: var(--red-text); }
+.track-chip.active { outline: 2px solid var(--blue); }
+.inc-title .icon { width: 13px; height: 13px; vertical-align: -2px; margin-right: 4px; }
 .cam-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
 .legend-inline { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
 .legend-inline span { display: inline-flex; align-items: center; gap: 6px; }
@@ -337,6 +344,9 @@ input[type="range"] { accent-color: var(--green); }
 .editor-hint kbd { font: 11px var(--mono); background: var(--chip-bg); border: 1px solid var(--border-2); border-radius: 4px; padding: 0 5px; color: var(--text); }
 .coords { font: 12px var(--mono); }
 .source-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; font-size: 12px; }
+.frame-rules { width: 100%; display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+.frame-rules .zone-item { width: 100%; font: 13px var(--sans); color: var(--text); text-align: left; }
+.frame-rule-form .panel-section:first-child { border-top: none; margin-top: 0; padding-top: 0; }
 .source-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
 .zone-list { display: flex; flex-direction: column; gap: 8px; }
 .zone-item { display: flex; align-items: center; gap: 10px; padding: 10px; border-radius: 10px; background: var(--card-2); border: 1px solid var(--border); cursor: pointer; }

@@ -5,11 +5,14 @@ import { act, openEvent, priorityBadge, reviewBadge, stateBadge } from "./event-
 import { hydrateIcons, icon } from "./icons.js";
 import { Socket } from "./sockets.js";
 import { sound } from "./sound.js";
-import { drawTrack, drawZone, Stage, zoneColor } from "./stage.js";
+import { drawTrack, drawZone, Stage, trackColor, zoneColor } from "./stage.js";
 import { currentSource, emit, on, patchSource, selectSource, state } from "./state.js";
-import { $, $$, canDo, episodeSeconds, esc, fmtDuration, fmtNum, fmtTime, isLinq, label, stored, store, toastError } from "./util.js";
+import {
+  $, $$, canDo, episodeSeconds, esc, fmtDuration, fmtNum, fmtSpeed, fmtTime, isLinq, label, SCENARIO_ICONS, stored, store, toastError,
+} from "./util.js";
 
 const TRAIL_LEN = 30;
+const INTERP_MS = 120; // рамка плавно переезжает к новому положению за это время — без рывков и мерцания
 
 const view = {
   stage: null,
@@ -18,6 +21,9 @@ const view = {
   frameAt: 0,
   trails: new Map(), // track_id -> [[x,y], ...]
   trackStates: new Map(),
+  anim: new Map(), // track_id -> { from, to, t0 } — интерполяция рамки между снимками
+  highlight: null, // track_id, выбранный в панели треков
+  panelAt: 0,
   toggles: stored("liveToggles", { zones: true, boxes: true, skeleton: true, trail: true }),
   realtime: stored("realtime", true),
   feedFilter: "all",
@@ -45,7 +51,7 @@ export function initLive(root) {
           <div class="overlay overlay-bottom">
             <div class="toggles">
               <label><input type="checkbox" data-toggle="zones" />Зоны</label>
-              <label><input type="checkbox" data-toggle="boxes" />Рамки</label>
+              <label><input type="checkbox" data-toggle="boxes" />Треки</label>
               <label><input type="checkbox" data-toggle="skeleton" />Скелет (поза)</label>
               <label><input type="checkbox" data-toggle="trail" />След движения</label>
             </div>
@@ -53,10 +59,11 @@ export function initLive(root) {
           </div>
         </div>
 
+        <div class="tracks-panel" id="tracks-panel" aria-label="Треки в кадре"></div>
         <div class="cam-foot">
           <div class="legend-inline">
-            <span><i class="sw" style="background:#38bdf8"></i>Человек вне зоны</span>
-            <span><i class="sw" style="background:#f59e0b"></i>Вошёл в зону — идёт подтверждение</span>
+            <span><i class="sw" style="background:linear-gradient(90deg,#38bdf8,#34d399,#a78bfa)"></i>Человек (свой цвет у каждого трека)</span>
+            <span><i class="sw" style="background:#f59e0b"></i>Кандидат: в зоне или быстро — идёт подтверждение</span>
             <span><i class="sw" style="background:#ef4444"></i>Тревога (эпизод подтверждён)</span>
             <span><i class="sw" style="background:#fff;border-radius:50%"></i>Точка контроля — ноги</span>
           </div>
@@ -151,8 +158,16 @@ function onLiveMessage(msg) {
   if (msg.type !== "live.frame") return;
   const data = msg.data;
   const apply = () => {
+    const now = performance.now();
+    const seen = new Set();
+    for (const t of data.tracks) {
+      seen.add(t.track_id);
+      const prev = view.anim.get(t.track_id);
+      view.anim.set(t.track_id, { from: prev ? lerpBox(prev, now) : t.bbox, to: t.bbox, t0: now });
+    }
+    for (const id of view.anim.keys()) if (!seen.has(id)) view.anim.delete(id);
     view.frame = data;
-    view.frameAt = performance.now();
+    view.frameAt = now;
     updateTrails(data.tracks);
     detectEntries(data.tracks);
     emit("live-stats", { fps: data.fps });
@@ -164,6 +179,11 @@ function onLiveMessage(msg) {
   } else {
     apply();
   }
+}
+
+function lerpBox({ from, to, t0 }, now) {
+  const k = Math.min(1, (now - t0) / INTERP_MS);
+  return to.map((v, i) => from[i] + (v - from[i]) * k);
 }
 
 function updateTrails(tracks) {
@@ -206,29 +226,36 @@ function loop(now) {
       drawZone(stage, z, zoneColor(i), { state: zstate, pulse });
     });
   }
-  for (const t of tracks) {
-    drawTrack(stage, t, {
-      boxes: toggles.boxes,
-      skeleton: toggles.skeleton,
-      trail: toggles.trail ? view.trails.get(t.track_id) : null,
-    });
+  if (toggles.boxes) {
+    for (const t of tracks) {
+      const anim = view.anim.get(t.track_id);
+      drawTrack(stage, anim ? { ...t, bbox: lerpBox(anim, now) } : t, {
+        boxes: true,
+        skeleton: toggles.skeleton,
+        trail: toggles.trail ? view.trails.get(t.track_id) : null,
+        highlight: view.highlight === t.track_id,
+        dim: view.highlight != null && view.highlight !== t.track_id,
+      });
+    }
   }
+  if (now - view.panelAt > 300) { view.panelAt = now; renderTracksPanel(fresh ? tracks : []); }
 
-  const alerting = tracks.filter((t) => t.state === "alert");
-  const inzone = tracks.filter((t) => t.state === "in_zone");
+  const visible = tracks.filter((t) => t.track_state !== "lost");
+  const alerting = visible.filter((t) => t.state === "alert");
+  const inzone = visible.filter((t) => t.state === "in_zone");
   const stageEl = $("#live-stage");
   stageEl.classList.toggle("alarm", alerting.length > 0);
   stageEl.classList.toggle("inzone", !alerting.length && inzone.length > 0);
   const status = $("#zone-status");
   if (alerting.length) {
     setIf(status, "className", "zone-status alarm");
-    setIf(status, "textContent", `⚠ ТРЕВОГА: ${alerting.length} чел. в зоне ${zoneNames(alerting)}`);
+    setIf(status, "textContent", `⚠ ТРЕВОГА: ${alerting.length} чел. — ${whereText(alerting)}`);
   } else if (inzone.length) {
     setIf(status, "className", "zone-status inzone");
-    setIf(status, "textContent", `В зоне ${zoneNames(inzone)} — подтверждение…`);
+    setIf(status, "textContent", `${whereText(inzone)} — подтверждение…`);
   } else {
     setIf(status, "className", "zone-status safe");
-    setIf(status, "textContent", fresh ? `Анализ идёт · нарушений нет · людей в кадре: ${tracks.length}` : "—");
+    setIf(status, "textContent", fresh ? `Анализ идёт · нарушений нет · людей в кадре: ${visible.length}` : "—");
   }
 
   const ts = $("#ov-ts");
@@ -236,6 +263,34 @@ function loop(now) {
     ? `<span class="badge badge-red">● LIVE</span><span>${fmtNum(frame.video_ts, 1)} с</span>`
     : `<span class="badge badge-gray">ПРЕВЬЮ</span>`;
   if (ts.dataset.html !== tsHtml) { ts.dataset.html = tsHtml; ts.innerHTML = tsHtml; }
+}
+
+// Панель треков в кадре: клик подсвечивает трек на кадре (повторный — снимает подсветку).
+function renderTracksPanel(tracks) {
+  const panel = $("#tracks-panel");
+  if (!panel) return;
+  const items = tracks.filter((t) => t.track_state !== "lost" || view.highlight === t.track_id);
+  const html = items.length
+    ? items.map((t) => {
+        const flags = t.flags || [];
+        const status = flags.includes("violation") ? "нарушение" : flags.includes("candidate") ? "кандидат"
+          : t.track_state === "lost" ? "потерян" : "норма";
+        const cls = flags.includes("violation") ? "bad" : flags.includes("candidate") ? "warn" : "";
+        return `<button class="track-chip ${cls} ${view.highlight === t.track_id ? "active" : ""}" data-track="${t.track_id}">
+          <i class="sw" style="background:${trackColor(t)}"></i>#${t.track_id}
+          <span>${t.speed != null ? fmtSpeed(t.speed) : ""}</span><b>${status}</b></button>`;
+      }).join("")
+    : `<span class="faint">Людей в кадре нет</span>`;
+  if (panel.dataset.html === html) return;
+  panel.dataset.html = html;
+  panel.innerHTML = html;
+  for (const b of $$("[data-track]", panel)) {
+    b.onclick = () => {
+      const id = Number(b.dataset.track);
+      view.highlight = view.highlight === id ? null : id;
+      view.panelAt = 0;
+    };
+  }
 }
 
 // Цикл отрисовки идёт 60 раз в секунду — DOM трогаем, только если значение изменилось.
@@ -247,6 +302,17 @@ function zoneNames(tracks) {
   const zones = state.zones[state.sourceId] || [];
   const ids = new Set(tracks.flatMap((t) => t.zone_ids));
   return zones.filter((z) => ids.has(z.id)).map((z) => `«${z.name}»`).join(", ");
+}
+
+// «в зоне «Пресс»», «бег / резкое перемещение» или оба.
+function whereText(tracks) {
+  const parts = [];
+  const zones = zoneNames(tracks);
+  if (zones) parts.push(`в зоне ${zones}`);
+  const fast = tracks.some((t) => (t.scenario_types || []).includes("run_fast_movement")
+    || ((t.flags || []).includes("candidate") && !(t.flags || []).includes("in_zone")));
+  if (fast) parts.push("бег / резкое перемещение");
+  return parts.join(" · ") || "нарушение";
 }
 
 // --- Шапка камеры, статусы, подсказки -------------------------------------------------------
@@ -283,13 +349,13 @@ function renderOverlay() {
   const fresh = view.frame && performance.now() - view.frameAt < 3000;
   const zones = state.zones[state.sourceId] || [];
   const det = state.metrics?.sources?.[0];
-  const kind = det?.detector_kind || state.health?.detector_kind;
+  const kind = (fresh && view.frame.detector_kind) || det?.detector_kind || state.health?.detector_kind;
   const fps = fresh ? view.frame.fps : det?.fps;
   const infoHtml = `
     <div style="color:${isLinq(kind) ? "#34d399" : "#fbbf24"}">${icon("cpu")} ${esc(label("detector", kind))}</div>
     <div class="muted">Модель: <span style="color:var(--text)">${esc(det?.model_version || "—")}</span></div>
     <div class="muted">FPS: <span style="color:var(--text)">${fmtNum(fps, 1)}</span> · инференс: <span style="color:var(--text)">${fmtNum(det?.inference_ms_avg, 0, " мс")}</span></div>
-    <div class="muted">Зон: <span style="color:var(--text)">${zones.length}</span> · людей: <span style="color:var(--text)">${fresh ? view.frame.tracks.length : "—"}</span></div>`;
+    <div class="muted">Зон: <span style="color:var(--text)">${zones.length}</span> · людей: <span style="color:var(--text)">${fresh ? view.frame.tracks.filter((t) => t.track_state !== "lost").length : "—"}</span></div>`;
   if ($("#ov-info").dataset.html !== infoHtml) { $("#ov-info").dataset.html = infoHtml; $("#ov-info").innerHTML = infoHtml; }
 
   let html = "", cls = "";
@@ -319,7 +385,9 @@ function renderOverlay() {
       <span class="muted">${src.status === "stopped" ? "Видео обработано или анализ остановлен. Нарушения сейчас НЕ контролируются." : "Запустите анализ, чтобы видеть людей и тревоги."}</span>
       <button class="btn btn-success" data-go="start">${icon("play")}Запустить анализ</button>`;
   }
-  if (src && !zones.length && !html) {
+  // Предупреждаем, только если правил нет совсем: правило без зоны (например «бег») смотрит весь кадр.
+  const frameRules = (state.rules[state.sourceId] || []).some((r) => r.enabled && !r.zone_id);
+  if (src && !zones.length && !frameRules && !html) {
     cls = "warn";
     html = `${icon("pen")}<b>У камеры нет опасных зон</b><span class="muted">Нарушения не ищутся. Разметьте территорию.</span>
       <button class="btn btn-warn" data-go="territory">${icon("pen")}Разметить зону</button>`;
@@ -403,10 +471,10 @@ function renderFeed() {
     return `<div class="inc ${hot ? "hot" : "done"} ${crit ? "crit" : ""}" data-ev="${ev.id}">
       ${ev.thumbnail_url ? `<img class="inc-thumb" src="${esc(mediaUrl(ev.thumbnail_url))}" alt="" loading="lazy" />` : `<div class="inc-thumb ph">${icon("film")}</div>`}
       <div class="inc-body">
-        <div class="inc-top"><span class="inc-title">${crit ? "⚠ " : ""}${esc(label("scenario", ev.scenario_type))}</span><span class="inc-time">${fmtTime(ev.started_at)}</span></div>
+        <div class="inc-top"><span class="inc-title">${icon(SCENARIO_ICONS[ev.scenario_type] || "alert-triangle")}${crit ? "⚠ " : ""}${esc(label("scenario", ev.scenario_type))}</span><span class="inc-time">${fmtTime(ev.started_at)}</span></div>
         <div class="inc-where">${esc(ev.source_name || "—")} • ${esc(ev.zone_name || "без зоны")}</div>
         <div class="inc-meta">${stateBadge(ev)}${reviewBadge(ev.review_status)}${priorityBadge(ev.priority)}
-          ${dur}<span>· ${Math.round(ev.confidence * 100)}%</span></div>
+          ${dur}<span>· ${Math.round(ev.confidence * 100)}%</span>${ev.details?.speed_max != null ? `<span title="ростов человека в секунду, не м/с">· макс ${fmtSpeed(ev.details.speed_max)}</span>` : ""}</div>
       </div>
       ${hot ? `<div class="inc-actions">
         <button class="btn btn-sm btn-success" data-act="confirm">${icon("check")}Подтвердить</button>

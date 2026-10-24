@@ -289,9 +289,10 @@ async function main() {
   on("source-selected", (id) => { loadZonesAndRules(id).catch(toastError); pollMetrics(); });
 
   await bootstrap();
-  showTab(hashTab() || "live");
   // Ссылка на карточку события: #live?event=<id> (или любая вкладка с ?event=).
+  // Читаем до showTab: журнал переписывает адрес своими фильтрами.
   const linked = new URLSearchParams(location.hash.split("?")[1] || "").get("event");
+  showTab(hashTab() || "live");
   if (linked) openEvent(linked);
   connectLive();
   loadFeed();

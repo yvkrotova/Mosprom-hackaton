@@ -1,0 +1,24 @@
+# Материалы LinQ от организаторов: архив, распакованное, скачанные SDK/API.
+# Внутри есть конфиг VPN (Hakathon.ovpn) — это секрет, в git не попадает никогда.
+LinQ.zip
+*.ovpn
+LinQ/extracted/
+LinQ/downloads/
+linq/extracted/
+linq/downloads/
+
+# Сборки и данные для LinQ: программы TPU, калибровка (~1 ГБ), окружения
+linq/build/
+LinQ/build/
+linq/calibration/
+LinQ/calibration/
+linq/.venv*/
+LinQ/.venv*/
+*.tpu
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/

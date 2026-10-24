@@ -5,6 +5,13 @@ export const zoneColor = (index) => ZONE_COLORS[index % ZONE_COLORS.length];
 
 const STATE_COLORS = { normal: "#38bdf8", in_zone: "#f59e0b", alert: "#ef4444" };
 
+// Постоянный цвет трека по его ID (обычное состояние). Кандидат — жёлтый, нарушение — красный.
+const TRACK_COLORS = ["#38bdf8", "#34d399", "#a78bfa", "#f472b6", "#22d3ee", "#a3e635", "#fb923c", "#c084fc"];
+export const trackColor = (track) =>
+  track.state === "alert" ? STATE_COLORS.alert
+    : track.state === "in_zone" ? STATE_COLORS.in_zone
+      : TRACK_COLORS[track.track_id % TRACK_COLORS.length];
+
 // Рёбра скелета COCO-17: голова, руки, корпус, ноги.
 const SKELETON = [
   [0, 1], [0, 2], [1, 3], [2, 4], [5, 6], [5, 7], [7, 9], [6, 8], [8, 10],
@@ -134,11 +141,19 @@ export function drawZone(stage, zone, color, { state = "normal", pulse = 0, labe
   }
 }
 
-export function drawTrack(stage, track, { skeleton = true, boxes = true, trail = null } = {}) {
+// track.bbox — уже интерполированная рамка; track_state "lost" рисуется полупрозрачно (прогноз).
+export function drawTrack(stage, track, { skeleton = true, boxes = true, trail = null, highlight = false, dim = false } = {}) {
   const { ctx } = stage;
-  const color = STATE_COLORS[track.state] || STATE_COLORS.normal;
+  const color = trackColor(track);
   const [x1, y1] = stage.px([track.bbox[0], track.bbox[1]]);
   const [x2, y2] = stage.px([track.bbox[2], track.bbox[3]]);
+  ctx.save();
+  ctx.globalAlpha = track.track_state === "lost" ? 0.4 : dim ? 0.35 : 1;
+  if (highlight) {
+    ctx.strokeStyle = "#fff";
+    ctx.lineWidth = 4;
+    ctx.strokeRect(x1 - 3, y1 - 3, x2 - x1 + 6, y2 - y1 + 6);
+  }
 
   if (trail?.length > 1) {
     ctx.lineWidth = 2;
@@ -165,9 +180,15 @@ export function drawTrack(stage, track, { skeleton = true, boxes = true, trail =
     ctx.strokeStyle = hexA(color, 0.35);
     ctx.lineWidth = 1;
     ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
-    const tag = track.state === "alert" ? "ТРЕВОГА" : track.state === "in_zone" ? "В ЗОНЕ" : "Человек";
+    const flags = track.flags || [];
+    const running = (track.scenario_types || []).includes("run_fast_movement");
+    const tag = track.track_state === "lost" ? "потерян"
+      : track.state === "alert" ? (running ? "БЕГ" : "ТРЕВОГА")
+        : flags.includes("candidate") && !flags.includes("in_zone") ? "БЫСТРО?"
+          : track.state === "in_zone" ? "В ЗОНЕ" : "Человек";
     const name = track.label === "person" ? tag : track.label;
-    chip(ctx, x1, y1 - 2, `#${track.track_id} ${name} ${Math.round(track.confidence * 100)}%`, hexA(color, 0.9));
+    const speed = track.speed != null ? ` ${track.speed.toFixed(1)} р/с` : "";
+    chip(ctx, x1, y1 - 2, `#${track.track_id} ${name}${speed}`, hexA(color, 0.9));
   }
 
   if (skeleton && track.keypoints?.length === 17) {
@@ -196,4 +217,5 @@ export function drawTrack(stage, track, { skeleton = true, boxes = true, trail =
   ctx.arc(fx, y2, 5, 0, Math.PI * 2);
   ctx.fill();
   ctx.stroke();
+  ctx.restore();
 }

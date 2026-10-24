@@ -4,7 +4,7 @@ import { mediaUrl } from "./config.js";
 import { openEvent, priorityBadge, reviewBadge, stateBadge } from "./event-modal.js";
 import { hydrateIcons, icon } from "./icons.js";
 import { on, state } from "./state.js";
-import { $, $$, episodeSeconds, esc, fmtDateTime, fmtDuration, label, toast, toastError } from "./util.js";
+import { $, $$, episodeSeconds, esc, fmtDateTime, fmtDuration, fmtSpeed, LABELS, label, toast, toastError } from "./util.js";
 
 const PAGE = 25;
 const FILTERS = ["scenario_type", "source_id", "zone_id", "from", "to", "state", "review_status", "priority"];
@@ -67,7 +67,7 @@ export function initJournal(root) {
       </div>
       <div class="filters">
         <label class="field"><span>Тип нарушения</span><select class="select" data-f="scenario_type"><option value="">Все типы</option>
-          ${Object.keys({ danger_zone: 0, fall_immobility: 0 }).map((k) => `<option value="${k}">${label("scenario", k)}</option>`).join("")}</select></label>
+          ${Object.keys(LABELS.scenario).map((k) => `<option value="${k}">${label("scenario", k)}</option>`).join("")}</select></label>
         <label class="field"><span>Камера</span><select class="select" data-f="source_id"></select></label>
         <label class="field"><span>Зона</span><select class="select" data-f="zone_id"></select></label>
         <label class="field"><span>С (местное время)</span><input class="input" type="datetime-local" data-f="from" /></label>
@@ -189,7 +189,7 @@ async function load() {
         <td>${e.thumbnail_url ? `<img src="${esc(mediaUrl(e.thumbnail_url))}" alt="" loading="lazy" />` : icon("film")}</td>
         <td class="mono">${fmtDateTime(e.started_at)}</td>
         <td>${esc(e.source_name || "камера удалена")}<div class="sub">${esc(e.zone_name || "без зоны")}</div></td>
-        <td>${esc(label("scenario", e.scenario_type))}<div class="sub">${priorityBadge(e.priority)}</div></td>
+        <td>${esc(label("scenario", e.scenario_type))}<div class="sub">${priorityBadge(e.priority)}${e.details?.speed_max != null ? ` макс ${fmtSpeed(e.details.speed_max)}` : ""}</div></td>
         <td class="mono">${e.state === "active" ? "идёт" : fmtDuration(episodeSeconds(e))}</td>
         <td class="mono">${Math.round(e.confidence * 100)}%</td>
         <td>${stateBadge(e)}</td>

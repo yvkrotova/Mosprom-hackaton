@@ -1,0 +1,54 @@
+{
+  "model": "backend/models/yolov8s.onnx",
+  "opset": {
+    "ai.onnx": 12
+  },
+  "inputs": {
+    "images": [
+      1,
+      3,
+      640,
+      640
+    ]
+  },
+  "outputs": {
+    "output0": [
+      1,
+      84,
+      8400
+    ]
+  },
+  "static_shapes": true,
+  "nodes": 234,
+  "ops": {
+    "Conv": 64,
+    "Sigmoid": 58,
+    "Mul": 58,
+    "Concat": 17,
+    "Split": 8,
+    "Add": 8,
+    "Reshape": 8,
+    "MaxPool": 3,
+    "Resize": 2,
+    "Transpose": 2,
+    "Slice": 2,
+    "Sub": 2,
+    "Softmax": 1,
+    "Div": 1
+  },
+  "tail_after_last_conv": [
+    "Reshape",
+    "Slice",
+    "Slice",
+    "Sub",
+    "Add",
+    "Add",
+    "Sub",
+    "Div",
+    "Concat",
+    "Mul",
+    "Concat"
+  ],
+  "unsupported": null,
+  "supported_list": "НЕТ — нужен список из tpu_framework.pdf"
+}

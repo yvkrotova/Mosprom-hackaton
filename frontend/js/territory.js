@@ -3,7 +3,7 @@ import { api } from "./api.js";
 import { hydrateIcons, icon } from "./icons.js";
 import { drawZone, Stage, zoneColor } from "./stage.js";
 import { currentSource, loadZonesAndRules, on, patchSource, refreshSources, selectSource, state } from "./state.js";
-import { $, $$, confirmModal, esc, fmtNum, label, openModal, toast, toastError } from "./util.js";
+import { $, $$, confirmModal, esc, fmtNum, label, openModal, SCENARIO_ICONS, toast, toastError } from "./util.js";
 
 const HANDLE = 7; // радиус «ручки» вершины, px
 const PRIMARY = "danger_zone"; // новой зоне этот сценарий включается сразу
@@ -385,9 +385,79 @@ function renderSourceBar() {
       <button class="btn btn-sm" id="edit-source">${icon("settings")}Изменить</button>
       <button class="btn btn-sm btn-ghost" id="delete-source" title="Удалить камеру">${icon("trash")}</button>
     </div>
-    ${src.last_error && src.status === "error" ? `<div class="notice notice-err" style="width:100%">${icon("alert-triangle")}<span>${esc(src.last_error)}</span></div>` : ""}`;
+    ${src.last_error && src.status === "error" ? `<div class="notice notice-err" style="width:100%">${icon("alert-triangle")}<span>${esc(src.last_error)}</span></div>` : ""}
+    ${frameScenarios().length ? `<div class="frame-rules">
+      <div class="muted" style="font-size:12px">Правила на весь кадр (без зоны):</div>
+      ${frameScenarios().map((info) => {
+        const rule = frameRule(info.scenario_type);
+        const badge = !rule ? `<span class="badge badge-gray">не задано</span>`
+          : rule.enabled ? `<span class="badge badge-green">вкл</span>` : `<span class="badge badge-gray">выкл</span>`;
+        return `<button class="zone-item" data-frame-rule="${info.scenario_type}">${icon(SCENARIO_ICONS[info.scenario_type] || "siren")}
+          <span class="z-name">${esc(info.title)}</span>${badge}</button>`;
+      }).join("")}</div>` : ""}`;
   $("#edit-source").onclick = () => editSource(src);
   $("#delete-source").onclick = () => deleteSource(src);
+  for (const b of $$("[data-frame-rule]", bar)) {
+    b.onclick = () => openFrameRule(state.scenarios.find((s) => s.scenario_type === b.dataset.frameRule));
+  }
+}
+
+// --- Правила без зоны (сценарии, которым зона не обязательна, например «бег») -----------------
+
+const frameScenarios = () => state.scenarios.filter((s) => !s.requires_zone);
+const frameRule = (type) => rulesOf(type).find((r) => !r.zone_id) || null;
+
+function openFrameRule(info) {
+  if (!info) return;
+  const existing = frameRule(info.scenario_type);
+  const r = {
+    info,
+    id: existing?.id || null,
+    enabled: existing ? existing.enabled : true,
+    priority: existing?.priority || "high",
+    params: structuredClone({ ...(info.defaults || {}), ...(existing?.params || {}) }),
+    version: existing?.version,
+  };
+  const { root, close } = openModal(`
+    <h3 class="modal-title">${icon(SCENARIO_ICONS[info.scenario_type] || "siren")} ${esc(info.title)} — весь кадр</h3>
+    <p class="muted" style="font-size:12px;margin-top:-6px">Правило действует на всём кадре камеры. Чтобы следить только в части кадра,
+      включите этот сценарий в правилах конкретной зоны.</p>
+    <div class="frame-rule-form">${ruleSection(r)}</div>
+    <div class="modal-actions">
+      ${existing ? `<button class="btn btn-danger" data-delete>${icon("trash")}Удалить</button>` : ""}
+      <button class="btn" data-cancel>Отмена</button><button class="btn btn-primary" data-ok>${icon("save")}Сохранить</button></div>`);
+  for (const el of $$("[data-field]", root)) {
+    const field = el.dataset.field;
+    el.oninput = el.onchange = () => {
+      if (field === "enabled") r.enabled = el.checked;
+      else if (field === "priority") r.priority = el.value;
+      else r.params[field] = readParam(el, info.params_schema.properties[field]);
+      const out = $(`[data-out="${info.scenario_type}.${field}"]`, root);
+      if (out) out.textContent = paramText(field, r.params[field]);
+    };
+  }
+  $("[data-cancel]", root).onclick = close;
+  const del = $("[data-delete]", root);
+  if (del) del.onclick = async () => {
+    try {
+      await api.deleteRule(existing.id);
+      await loadZonesAndRules(state.sourceId);
+      close();
+      renderSourceBar();
+      toast("Правило удалено", "success", { timeout: 2000 });
+    } catch (err) { toastError(err); }
+  };
+  $("[data-ok]", root).onclick = async () => {
+    const body = { enabled: r.enabled, priority: r.priority, params: { ...r.params } };
+    try {
+      if (r.id) await api.updateRule(r.id, body);
+      else await api.createRule({ source_id: state.sourceId, zone_id: null, scenario_type: info.scenario_type, ...body });
+      await loadZonesAndRules(state.sourceId);
+      close();
+      renderSourceBar();
+      toast(`Правило «${info.title}» сохранено. Применится при следующем запуске анализа.`, "success", { timeout: 3500 });
+    } catch (err) { toastError(err); }
+  };
 }
 
 function editSource(src) {
