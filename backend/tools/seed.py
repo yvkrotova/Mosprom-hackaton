@@ -3,6 +3,7 @@
     python tools/seed.py путь/к/видео.mp4 [--name "Камера 3"] [--site "Цех №2"]
     python tools/seed.py --demo        # сгенерировать демо-видео под MockDetector и засеять
     python tools/seed.py --videos      # 4 тестовых ролика из data/videos/manifest.json
+    python tools/seed.py --history [30] [--clear]   # смены 5 начальников и инциденты за N дней
 
 Пишет прямо в БД из DATABASE_URL (миграции применяются автоматически), backend может быть
 запущен или нет. Повторный запуск с тем же видео не создаёт дублей.
@@ -22,7 +23,7 @@ from app.db import make_engine, make_session_factory, run_migrations  # noqa: E4
 from app.models import Rule, Source, Zone  # noqa: E402
 from app.pipeline.scenarios.danger_zone import DangerZoneParams  # noqa: E402
 from app.schemas.enums import Priority, ScenarioType, SourceKind  # noqa: E402
-from app.services import media  # noqa: E402
+from app.services import demo_service, media  # noqa: E402
 from tools.make_demo_video import DEMO_ZONE, make_demo_video  # noqa: E402
 
 
@@ -141,11 +142,33 @@ def main() -> None:
         action="store_true",
         help="4 тестовых ролика из data/videos/manifest.json с зонами и правилами",
     )
+    parser.add_argument(
+        "--history",
+        nargs="?",
+        const=30,
+        type=int,
+        metavar="ДНЕЙ",
+        help="Демо-история для «Статистики»: 4 демо-камеры, смены 5 начальников, инциденты",
+    )
+    parser.add_argument("--clear", action="store_true", help="С --history: удалить демо-историю")
     parser.add_argument("--name", default="Камера 3 — цех штамповки")
     parser.add_argument("--site", default="Цех №2")
     args = parser.parse_args()
 
     settings = get_settings()
+    if args.history is not None:
+        run_migrations(settings.database_url)
+        with make_session_factory(make_engine(settings.database_url))() as session:
+            if args.clear:
+                print("Удалено:", demo_service.clear(session))
+            else:
+                info = demo_service.generate(session, days=args.history)
+                print(
+                    f"Демо-история за {info['days']} дн.: смен {info['shifts']}, "
+                    f"инцидентов {info['events']}, демо-камер {info['sources']}"
+                )
+                print("Начальники смен:", ", ".join(n for n, _a, _b in demo_service.SUPERVISORS))
+        return
     if args.videos:
         for vid, source_id, created in seed_videos(settings):
             print(f"  {vid:12} {source_id} {'создан' if created else 'уже был'}")

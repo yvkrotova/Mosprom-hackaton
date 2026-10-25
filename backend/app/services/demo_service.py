@@ -96,9 +96,9 @@ SCENARIO_WEIGHTS = {
 
 
 def _count(rng: random.Random, mean: float) -> int:
-    """Число инцидентов за смену: среднее профиля с умеренным разбросом (±25%). Пуассон на 12 сменах
+    """Число инцидентов за смену: среднее профиля с умеренным разбросом (±15%). Пуассон на 12 сменах
     слишком шумит — заложенные паттерны (тренд, антилидер) тонули бы в случайности."""
-    return max(0, round(rng.gauss(mean, 0.25 * mean + 0.3)))
+    return max(0, round(rng.gauss(mean, 0.15 * mean + 0.2)))
 
 
 def _demo_sources(session: Session) -> list[tuple[Source, list[Zone]]]:
@@ -164,6 +164,12 @@ def generate(
     cameras = _demo_sources(session)
     weights = [w for _n, _s, w, _z in CAMERAS]
     real_shifts = list(session.scalars(select(Shift).where(Shift.is_demo.is_(False))))
+    # Реальные события не приписываем выдуманным начальникам: демо-смена не ставится туда, где
+    # они есть (в динамике и горячих точках реальные события всё равно учитываются).
+    real_times = [
+        as_utc(t)
+        for t in session.scalars(select(Event.started_at).where(Event.model_version != DEMO_MODEL))
+    ]
 
     local_now = now.astimezone(tz)
     first_day = (local_now - timedelta(days=days)).replace(
@@ -184,6 +190,8 @@ def generate(
             as_utc(r.started_at) < end and (r.ended_at is None or as_utc(r.ended_at) > start)
             for r in real_shifts
         ):
+            continue
+        if any(start <= t < end for t in real_times):
             continue
         session.add(Shift(supervisor=name, site=None, started_at=start, ended_at=end, is_demo=True))
         shifts += 1

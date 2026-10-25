@@ -107,3 +107,15 @@ def test_few_shifts_are_not_ranked(app, client):
     assert newbie["rank"] is None and newbie["safety_index"] == 100  # одна чистая смена
     assert data["summary"]["best_supervisor"]["supervisor"] == "Иванов И.И."
     assert data["supervisors"][-1]["supervisor"] == "Новиков П.П."
+
+
+def test_real_events_are_not_blamed_on_demo_supervisors(app, client, make_source, make_event):
+    real = make_source("Реальная камера")
+    make_event(real, NOW - timedelta(days=2, hours=3))
+    _generate(app)
+    with app.state.session_factory() as s:
+        t = NOW - timedelta(days=2, hours=3)
+        utc = lambda d: d.replace(tzinfo=UTC)  # noqa: E731
+        covering = [x for x in s.query(Shift).all() if utc(x.started_at) <= t < utc(x.ended_at)]
+    assert covering == []  # демо-смены нет — реальное событие не приписано выдуманному начальнику
+    assert _overview(app)["summary"]["total"] > 1  # но в динамике оно учитывается
