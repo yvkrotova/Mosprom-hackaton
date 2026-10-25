@@ -12,7 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from app.errors import ConflictError, NotFoundError, UnprocessableError
-from app.models import Event, OperatorAction, Source, Zone
+from app.models import DeletedEvent, Event, OperatorAction, Source, Zone
 from app.models.base import as_utc, utcnow
 from app.schemas.enums import (
     REVIEW_TRANSITIONS,
@@ -186,13 +186,13 @@ def view_all(session: Session, hub: WsHub, site: str | None = None) -> int:
     return len(events)
 
 
-def clear_all(session: Session, hub: WsHub, storage_dir: Path) -> int:
-    """«Очистить всё» в журнале: удаляет все события вместе с историей проверки и кадрами-
-    доказательствами (файлы тоже). Необратимо. Анализ, если идёт, продолжает работать: его
-    следующие эпизоды появятся в журнале как новые."""
-    events = session.scalars(select(Event).options(selectinload(Event.evidence))).all()
+def _delete(session: Session, events: list[Event], storage_dir: Path) -> None:
+    """Удаляет события с историей и кадрами (файлы тоже) и ставит «надгробия»: обновления этих
+    эпизодов от идущего анализа больше не создадут их заново."""
     files = [storage_dir / ev.path for event in events for ev in event.evidence]
+    now = utcnow()
     for event in events:
+        session.merge(DeletedEvent(id=event.id, deleted_at=now))
         session.delete(event)  # история действий и записи доказательств — каскадом
     session.commit()
     for path in files:
@@ -200,6 +200,20 @@ def clear_all(session: Session, hub: WsHub, storage_dir: Path) -> int:
     for folder in {p.parent for p in files}:
         with suppress(OSError):
             folder.rmdir()  # пустая папка события
+
+
+def delete_event(session: Session, hub: WsHub, event_id: str, storage_dir: Path) -> None:
+    event = get_event(session, event_id)
+    _delete(session, [event], storage_dir)
+    hub.publish(WsMessageType.EVENT_DELETED, {"id": event_id})
+
+
+def clear_all(session: Session, hub: WsHub, storage_dir: Path) -> int:
+    """«Очистить всё» в журнале: удаляет все события вместе с историей проверки и кадрами-
+    доказательствами (файлы тоже). Необратимо. Идущий анализ свои старые эпизоды не вернёт
+    (надгробия), новые эпизоды появятся в журнале как новые."""
+    events = session.scalars(select(Event).options(selectinload(Event.evidence))).all()
+    _delete(session, list(events), storage_dir)
     hub.publish(WsMessageType.EVENTS_CLEARED, {"count": len(events)})
     return len(events)
 
@@ -411,6 +425,8 @@ def upsert_event(
     """Создаёт или обновляет эпизод. Повтор того же тела ничего не меняет и не шлёт в WS."""
     event = session.get(Event, event_id)
     if event is None:
+        if session.get(DeletedEvent, event_id) is not None:
+            return UpsertOutcome.DELETED, None  # оператор удалил — не воскрешаем
         return _create(session, hub, event_id, payload)
 
     if event.state == EpisodeState.ENDED and payload.video_ts_end <= event.video_ts_end + 1e-6:

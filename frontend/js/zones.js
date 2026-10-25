@@ -6,8 +6,9 @@ import { api } from "./api.js";
 import { mediaUrl } from "./config.js";
 import { polygonProblems } from "./geometry.js";
 import { hydrateIcons, icon } from "./icons.js";
-import { drawZone, Stage } from "./stage.js";
-import { currentSource, emit, loadZonesAndRules, on, patchSource, refreshSources, selectSource, state } from "./state.js";
+import { Socket } from "./sockets.js";
+import { drawTrack, drawZone, Stage } from "./stage.js";
+import { currentSource, emit, liveSources, loadZonesAndRules, on, patchSource, refreshSources, selectSource, state } from "./state.js";
 import { $, $$, confirmModal, esc, fmtNum, helpIcon, label, openModal, scenarioIcon, scenarioInfo, toast, toastError } from "./util.js";
 
 const HANDLE = 7; // радиус точки, px
@@ -28,7 +29,13 @@ const ed = {
   errors: {}, // key зоны -> { name, polygon, scenario_types } (тексты)
   saving: false,
   image: null,
+  live: null, // сокет /ws/live выбранной камеры: идущий анализ показывается прямо в редакторе
+  liveFrame: null,
+  liveAt: 0,
 };
+
+const LIVE_FRESH_MS = 3000;
+const liveOn = () => Boolean(ed.liveFrame) && performance.now() - ed.liveAt < LIVE_FRESH_MS;
 
 const zoneScenarios = () => state.scenarios.filter((s) => s.requires_zone);
 const frameScenarios = () => state.scenarios.filter((s) => !s.requires_zone);
@@ -314,6 +321,8 @@ function draw() {
   if (!stage?.width || !ed.draft) return;
   const { ctx } = stage;
   stage.drawBackground();
+  // Идущий анализ: люди и треки поверх живого кадра (под контурами зон и их точками).
+  if (liveOn()) for (const t of ed.liveFrame.tracks) drawTrack(stage, t, { boxes: true, skeleton: false });
   ed.draft.zones.forEach((z, i) => {
     if (z.removed) return;
     const sel = i === ed.sel;
@@ -366,7 +375,7 @@ function renderShell(root) {
             <button class="btn btn-primary" id="zn-new">${icon("plus")}Новая зона</button>
             <button class="btn btn-ghost" id="zn-frame">${icon("refresh")}Обновить кадр</button>
           </div>
-          <div class="editor-stage" id="zn-stage"><span class="cam-label">Кадр камеры</span></div>
+          <div class="editor-stage" id="zn-stage"><span class="cam-label" id="zn-live">Кадр камеры</span></div>
           <div class="editor-tools">
             <button class="btn" data-mode="points">${icon("route")}Точки</button>
             <button class="btn" data-mode="move">${icon("move")}Переместить</button>
@@ -392,7 +401,7 @@ function renderShell(root) {
   document.addEventListener("keydown", onKey);
   $("#zn-new").onclick = startDrawing;
   $("#zn-frame").onclick = () => loadFrame(true);
-  $("#zn-add-cam").onclick = () => emit("add-camera");
+  $("#zn-add-cam").onclick = () => emit("add-camera", { stay: true });
   for (const b of $$("[data-mode]", root)) b.onclick = () => { ed.mode = b.dataset.mode; renderAll(); };
   $("#zn-undo").onclick = undoPoint;
   $("#zn-finish").onclick = finishContour;
@@ -436,7 +445,7 @@ function renderSide() {
   if (!src) {
     side.innerHTML = `<div class="panel side-card"><h3>Камера</h3><div class="empty">${icon("video")}<b>Камер нет</b>
       <button class="btn btn-primary" data-add>${icon("plus")}Добавить камеру</button></div></div>`;
-    $("[data-add]", side).onclick = () => emit("add-camera");
+    $("[data-add]", side).onclick = () => emit("add-camera", { stay: true });
     return;
   }
   const stCls = src.status === "running" ? "on" : ["error", "disconnected"].includes(src.status) ? "bad" : "off";
@@ -447,7 +456,7 @@ function renderSide() {
   side.innerHTML = `
     <div class="panel side-card">
       <h3>Камера</h3>
-      <select class="select" id="zn-cam" aria-label="Камера">${state.sources.map((s) => `<option value="${s.id}" ${s.id === src.id ? "selected" : ""}>${esc(s.name)}${s.site ? " · " + esc(s.site) : ""}</option>`).join("")}</select>
+      <select class="select" id="zn-cam" aria-label="Камера">${liveSources().map((s) => `<option value="${s.id}" ${s.id === src.id ? "selected" : ""}>${esc(s.name)}${s.site ? " · " + esc(s.site) : ""}</option>`).join("")}</select>
       <div class="status-line"><span class="st ${stCls}"><span class="dot ${stCls === "on" ? "on" : stCls === "bad" ? "bad" : ""}"></span>${esc(label("status", src.status))}</span>
         <span class="muted">${esc(src.site || "участок не указан")} · ${fmtNum(src.analysis_fps, 0)} кадр/с</span></div>
       ${src.status === "error" && src.last_error ? `<div class="notice notice-error">${icon("alert-triangle")}<span>${esc(src.last_error)}</span></div>` : ""}
@@ -456,7 +465,7 @@ function renderSide() {
         <button class="icon-btn" id="zn-del" title="Удалить камеру" style="border-radius:10px">${icon("trash")}</button>
         ${["running", "disconnected"].includes(src.status)
           ? `<button class="btn btn-ghost" id="zn-stop">${icon("stop")}Остановить анализ</button>`
-          : `<button class="btn btn-ghost" id="zn-start">${icon("play")}Запустить анализ</button>`}
+          : `<button class="btn btn-primary" id="zn-start">${icon("play")}Начать анализ</button>`}
       </div>
     </div>
     <div class="panel side-card">
@@ -518,7 +527,17 @@ function bindSide(src) {
   $("#zn-edit").onclick = () => editSource(src);
   $("#zn-del").onclick = () => deleteSource(src);
   const start = $("#zn-start"), stop = $("#zn-stop");
-  if (start) start.onclick = async () => { try { patchSource(await api.startSource(src.id, true)); } catch (err) { toastError(err); } };
+  // Анализ запускается и показывается здесь же — в редакторе (без перехода на «Мониторинг»).
+  if (start) start.onclick = async () => {
+    start.disabled = true;
+    try {
+      patchSource(await api.startSource(src.id, true));
+      toast("Анализ запущен — живой кадр появится в редакторе через пару секунд", "success", { timeout: 3000 });
+    } catch (err) {
+      toastError(err);
+      start.disabled = false;
+    }
+  };
   if (stop) stop.onclick = async () => { try { patchSource(await api.stopSource(src.id)); } catch (err) { toastError(err); } };
   for (const input of $$("[data-frame]")) {
     input.onchange = () => { ed.draft.frame[input.dataset.frame].enabled = input.checked; renderFoot(); };
@@ -628,6 +647,51 @@ async function deleteSource(src) {
 
 // --- Кадр камеры -----------------------------------------------------------------------------
 
+// --- Живой кадр идущего анализа ---------------------------------------------------------------
+
+function liveConnect() {
+  ed.live?.close();
+  ed.live = null;
+  ed.liveFrame = null;
+  renderLiveLabel();
+  const id = state.sourceId;
+  if (!id || !ed.visible) return;
+  ed.live = new Socket(`/ws/live/${id}`, {
+    onMessage: (msg) => {
+      if (msg.data?.source_id !== state.sourceId) return;
+      if (msg.type === "live.ended") {
+        ed.liveFrame = null;
+        loadFrame(); // анализ завершён — снова снимок камеры
+        renderLiveLabel();
+        return;
+      }
+      if (msg.type !== "live.frame") return;
+      const data = msg.data;
+      const apply = () => {
+        ed.liveFrame = data;
+        ed.liveAt = performance.now();
+        renderLiveLabel();
+        draw();
+      };
+      if (!data.image) return apply();
+      const img = new Image();
+      img.onload = () => {
+        if (state.sourceId !== id) return;
+        ed.stage.setImage(img, data.width, data.height);
+        apply();
+      };
+      img.src = data.image;
+    },
+  });
+}
+
+function renderLiveLabel() {
+  const el = $("#zn-live");
+  if (!el) return;
+  const text = liveOn() ? "● Анализ идёт · живой кадр" : "Кадр камеры";
+  if (el.textContent !== text) el.textContent = text;
+}
+
 function loadFrame(manual = false) {
   const id = state.sourceId;
   if (!id) { ed.stage.setImage(null); return draw(); }
@@ -648,12 +712,14 @@ function loadFrame(manual = false) {
 
 export function initZones(root) {
   renderShell(root);
-  on("loaded", () => { reset(); loadFrame(); renderAll(); });
-  on("source-selected", () => { reset(); loadFrame(); renderAll(); });
+  on("loaded", () => { reset(); loadFrame(); liveConnect(); renderAll(); });
+  on("source-selected", () => { reset(); loadFrame(); liveConnect(); renderAll(); });
   on("sources", () => {
-    if (ed.sourceId !== state.sourceId) { reset(); loadFrame(); }
+    if (ed.sourceId !== state.sourceId) { reset(); loadFrame(); liveConnect(); }
     renderAll();
   });
+  // Живой кадр перестал приходить — подпись возвращается к «Кадр камеры».
+  setInterval(() => { if (ed.visible && ed.liveFrame) { renderLiveLabel(); if (!liveOn()) draw(); } }, 1000);
   on("zones", (sourceId) => {
     // Данные камеры обновились извне: черновик без правок — перечитываем; с правками — не трогаем.
     if (sourceId === ed.sourceId && !isDirty()) { reset(); renderAll(); }
@@ -665,9 +731,13 @@ export function initZones(root) {
 
 export function setZonesVisible(visible) {
   ed.visible = visible;
-  if (visible) {
-    if (!ed.draft || ed.sourceId !== state.sourceId) { reset(); loadFrame(); }
-    ed.stage?.resize();
-    renderAll();
+  if (!visible) {
+    ed.live?.close(); // анализ продолжается в воркере; закрываем только просмотр
+    ed.live = null;
+    return;
   }
+  if (!ed.draft || ed.sourceId !== state.sourceId) { reset(); loadFrame(); }
+  liveConnect();
+  ed.stage?.resize();
+  renderAll();
 }

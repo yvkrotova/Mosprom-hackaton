@@ -84,6 +84,16 @@ class Evidence(IdMixin, Base):
     event: Mapped[Event] = relationship(back_populates="evidence")
 
 
+class DeletedEvent(Base):
+    """«Надгробие» удалённого оператором события: идущий анализ мог прислать обновление этого
+    эпизода позже — backend его отклоняет, а не создаёт событие заново."""
+
+    __tablename__ = "deleted_events"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    deleted_at: Mapped[datetime] = mapped_column(UtcDateTime, default=utcnow)
+
+
 class OperatorAction(IdMixin, Base):
     __tablename__ = "operator_actions"
 

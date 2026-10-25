@@ -270,3 +270,24 @@ def test_clear_journal_and_view_all(app, client, settings, make_source, make_eve
     assert client.delete("/api/v1/events").json() == {"deleted": 2}
     assert client.get("/api/v1/events").json()["total"] == 0
     assert not evidence.exists() and not evidence.parent.exists()
+
+
+def test_deleted_events_are_not_resurrected_by_running_analysis(
+    client, internal_headers, make_source, make_event
+):
+    from tests.test_internal_api import episode
+
+    src = make_source()
+    one = make_event(src, T)
+    two = make_event(src, T + timedelta(minutes=1))
+    assert client.delete(f"/api/v1/events/{one}").status_code == 204
+    assert client.get(f"/api/v1/events/{one}").status_code == 404
+    assert client.get("/api/v1/events").json()["total"] == 1
+    # Воркер ещё присылает обновление удалённого эпизода — событие не появляется снова.
+    r = client.put(f"/internal/events/{one}", json=episode(src), headers=internal_headers)
+    assert r.status_code == 200 and r.json()["outcome"] == "deleted"
+    assert client.delete("/api/v1/events").json() == {"deleted": 1}
+    r = client.put(f"/internal/events/{two}", json=episode(src), headers=internal_headers)
+    assert r.json()["outcome"] == "deleted"
+    assert client.get("/api/v1/events").json()["total"] == 0
+    assert client.delete(f"/api/v1/events/{one}").status_code == 404

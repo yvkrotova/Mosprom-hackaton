@@ -103,3 +103,56 @@ def test_delete_source_cascades_config_but_keeps_journal(settings):
         assert s.scalars(select(Rule)).all() == []
         assert len(s.scalars(select(Event)).all()) == 1
     engine.dispose()
+
+
+def test_upgrade_keeps_related_rows(settings):
+    """SQLite меняет таблицы пересозданием: миграции не должны каскадно удалять зоны, правила,
+    замеры, кадры и историю (так было бы со включёнными внешними ключами)."""
+    from alembic import command
+    from alembic.config import Config
+    from sqlalchemy import text
+
+    from app.config import BACKEND_DIR
+
+    cfg = Config(str(BACKEND_DIR / "alembic.ini"))
+    cfg.set_main_option("script_location", str(BACKEND_DIR / "alembic"))
+    cfg.set_main_option("sqlalchemy.url", settings.database_url)
+    command.upgrade(cfg, "0005")
+    engine = make_engine(settings.database_url)
+    now = "2026-10-23 09:00:00"
+    with engine.begin() as c:
+        c.execute(
+            text(
+                "INSERT INTO sources (id, name, kind, uri, status, analysis_fps, created_at, "
+                "updated_at) "
+                f"VALUES ('s1', 'Камера', 'file', 'v.mp4', 'idle', 10, '{now}', '{now}')"
+            )
+        )
+        c.execute(
+            text(
+                "INSERT INTO zones (id, source_id, name, polygon, created_at, updated_at) "
+                f"VALUES ('z1', 's1', 'Зона', '[[0,0],[1,0],[1,1]]', '{now}', '{now}')"
+            )
+        )
+        c.execute(
+            text(
+                "INSERT INTO rules (id, source_id, zone_id, scenario_type, enabled, priority, "
+                "params, version, auto_created, created_at, updated_at) "
+                "VALUES ('r1', 's1', 'z1', 'danger_zone', 1, 'high', '{}', 1, 0, "
+                f"'{now}', '{now}')"
+            )
+        )
+        c.execute(
+            text(
+                "INSERT INTO processing_stats (id, source_id, ts, frames_processed) "
+                f"VALUES ('p1', 's1', '{now}', 5)"
+            )
+        )
+    engine.dispose()
+    run_migrations(settings.database_url)  # 0005 → head (с пересозданием sources/events/shifts)
+    engine = make_engine(settings.database_url)
+    with engine.connect() as c:
+        counts = {t: c.execute(text(f"SELECT count(*) FROM {t}")).scalar()
+                  for t in ("sources", "zones", "rules", "processing_stats")}  # fmt: skip
+    engine.dispose()
+    assert counts == {"sources": 1, "zones": 1, "rules": 1, "processing_stats": 1}

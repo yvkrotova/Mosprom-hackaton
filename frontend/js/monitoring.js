@@ -3,13 +3,14 @@
 // он идёт в воркерах backend; здесь только просмотр.
 import { api } from "./api.js";
 import { mediaUrl } from "./config.js";
+import { openEmergency } from "./emergency.js";
 import { openEvent } from "./event-modal.js";
 import { hydrateIcons, icon } from "./icons.js";
 import { Socket } from "./sockets.js";
 import { sound } from "./sound.js";
 import { drawTrack, drawZone, Stage, zoneColor } from "./stage.js";
-import { emit, on, refreshSources, refreshUnviewed, sites, sourceById, state } from "./state.js";
-import { $, $$, envLabel, esc, fmtHM, isReplay, label, openMenu, plural, scenarioInfo, stored, store, toastError } from "./util.js";
+import { emit, liveSources, on, patchSource, refreshSources, refreshUnviewed, sites, sourceById, state } from "./state.js";
+import { $, $$, envLabel, esc, fmtHM, isReplay, label, openMenu, plural, scenarioInfo, stored, store, toast, toastError } from "./util.js";
 
 const INTERP_MS = 120; // рамка плавно переезжает к новому положению — без рывков
 const TRAIL_LEN = 30;
@@ -28,6 +29,9 @@ const view = {
   selected: null,
   eventsError: null,
   eventsLoaded: false,
+  // Лента событий: свёрнута ли и с какого момента «очищена» (старые карточки скрыты, события — в журнале).
+  eventsHidden: Boolean(stored("eventsHidden", false)),
+  clearedAt: stored("eventsClearedAt", null),
 };
 
 // --- Раскладка сетки ---------------------------------------------------------------------------
@@ -68,12 +72,12 @@ function applyLayout() {
 }
 
 // Источники участка (выбранного в «Мониторинге»); "" — все.
-const siteSources = () => state.sources.filter((s) => !state.site || s.site === state.site);
+const siteSources = () => liveSources().filter((s) => !state.site || s.site === state.site);
 
 // Назначение ячеек: сохранённое; новые ячейки заполняются камерами участка без повторов.
 function ensureAssignment() {
   let assign = Array.isArray(view.assign) ? view.assign.slice(0, MAX_CELLS) : [];
-  const known = new Set(state.sources.map((s) => s.id));
+  const known = new Set(liveSources().map((s) => s.id));
   assign = assign.map((id) => (id && known.has(id) ? id : null));
   while (assign.length < MAX_CELLS) assign.push(null);
   if (!Array.isArray(view.assign)) {
@@ -197,6 +201,7 @@ class Cell {
       return;
     }
     const bad = ["error", "disconnected"].includes(src.status);
+    const running = src.status === "running";
     const kind = this.kindLabel(src);
     const dot = src.status === "running" ? "on" : bad ? "bad" : "";
     this.overlay.innerHTML = `
@@ -208,6 +213,7 @@ class Cell {
         <button class="icon-btn" data-expand title="${expanded ? "Полный экран" : "Раскрыть камеру"}">${icon(expanded ? "maximize" : "expand")}</button>
       </div>
       <div class="cam-kind ${kind.cls}">${esc(kind.text)}</div>
+      ${!running && !bad ? `<button class="btn btn-primary cam-start" data-start title="Запустить анализ этой камеры здесь же">${icon("play")}Запустить</button>` : ""}
       ${bad ? `<div class="cam-nosignal">${icon("wifi-off")}<b>Нет сигнала</b>
         <span>${esc(label("status", src.status))}${src.last_error ? ": " + esc(src.last_error) : ""}</span>
         <div style="display:flex;gap:8px"><button class="btn btn-sm" data-retry>${icon("refresh")}Переподключиться</button>
@@ -218,14 +224,38 @@ class Cell {
     $("[data-menu]", this.overlay).onclick = (e) => openMenu(e.currentTarget, [
       { label: "Сменить камеру", icon: "grid", run: () => pickCamera(this.index, e.target.closest("button")) },
       { label: "Развернуть на весь экран", icon: "maximize", run: () => this.el.requestFullscreen?.() },
+      running
+        ? { label: "Остановить анализ", icon: "stop", run: () => this.stop() }
+        : { label: "Запустить анализ", icon: "play", run: () => this.start() },
       { label: "Убрать из ячейки", icon: "x", run: () => assignCell(this.index, null) },
     ]);
+    const startBtn = $("[data-start]", this.overlay);
+    if (startBtn) startBtn.onclick = () => this.start(startBtn);
     const retry = $("[data-retry]", this.overlay);
     if (retry) retry.onclick = () => this.reconnect();
     const restart = $("[data-restart]", this.overlay);
-    if (restart) restart.onclick = async () => {
-      try { await api.startSource(src.id, true); await refreshSources(); } catch (err) { toastError(err); }
-    };
+    if (restart) restart.onclick = () => this.start(restart);
+  }
+
+  // Запуск анализа прямо в ячейке: остаёмся на «Мониторинге», живой кадр придёт в эту же ячейку
+  // (сокет /ws/live этой камеры уже открыт и переподключается сам).
+  async start(btn) {
+    if (btn) { btn.disabled = true; btn.innerHTML = `${icon("refresh")}Запускаем…`; }
+    try {
+      patchSource(await api.startSource(this.sourceId, true));
+      toast(`Анализ «${sourceById(this.sourceId)?.name || "камеры"}» запущен`, "success", { timeout: 2500 });
+    } catch (err) {
+      toastError(err);
+      this.renderOverlay();
+    }
+  }
+
+  async stop() {
+    try {
+      patchSource(await api.stopSource(this.sourceId));
+    } catch (err) {
+      toastError(err);
+    }
   }
 
   draw(now) {
@@ -313,7 +343,7 @@ function renderGrid() {
     if (cell && i >= view.n) { cell.destroy(); view.cells[i] = null; }
   }
   grid.innerHTML = "";
-  if (!state.sources.length) {
+  if (!liveSources().length) {
     grid.style.width = "";
     grid.innerHTML = `<div class="panel empty" style="grid-column:1/-1">${icon("video")}<b>Камер пока нет</b>
       <span>Добавьте видео или поток камеры — анализ начнётся автоматически.</span>
@@ -351,6 +381,7 @@ function renderBar() {
     </div>
     <button class="icon-btn" id="grid-full" title="Сетка на весь экран">${icon("expand")}</button>
     <button class="btn btn-primary" id="add-cam">${icon("plus")}Добавить камеру</button>
+    <button class="btn btn-emergency" id="sos-btn" title="Вызов экстренных служб при происшествии">${icon("phone")}Экстренный вызов</button>
     <span class="online-note"><span class="dot ${online ? "on" : ""}"></span>${online} ${plural(online, "камера", "камеры", "камер")} онлайн</span>`;
   $("#site-select").onchange = (e) => {
     state.site = e.target.value;
@@ -380,6 +411,8 @@ function renderBar() {
   }
   $("#grid-full").onclick = () => $("#cam-area").requestFullscreen?.();
   $("#add-cam").onclick = () => emit("add-camera");
+  // Выбрано событие в панели — вызов записывается в его историю; иначе только номера служб.
+  $("#sos-btn").onclick = () => openEmergency(view.selected ? view.events.get(view.selected) : null);
 }
 
 // --- Панель событий -----------------------------------------------------------------------------
@@ -400,6 +433,7 @@ async function loadEvents() {
 function eventMatches(ev) {
   const src = sourceById(ev.source_id);
   if (state.site && src?.site !== state.site) return false;
+  if (view.clearedAt && new Date(ev.started_at) <= new Date(view.clearedAt)) return false;
   return view.filter !== "new" || !ev.viewed_at;
 }
 
@@ -409,6 +443,8 @@ function renderEvents() {
   const unviewed = state.unviewed.total;
   $("#events-new").textContent = `${unviewed} ${plural(unviewed, "новое", "новых", "новых")}`;
   $("#events-new").hidden = !unviewed;
+  $("#events-rail-count").textContent = unviewed;
+  $("#events-rail-count").hidden = !unviewed;
   for (const b of $$("[data-filter]")) b.classList.toggle("active", b.dataset.filter === view.filter);
   if (!view.eventsLoaded) {
     list.innerHTML = [1, 2, 3].map(() => `<div class="skeleton" style="height:210px"></div>`).join("");
@@ -423,7 +459,12 @@ function renderEvents() {
   const items = [...view.events.values()].filter(eventMatches)
     .sort((a, b) => new Date(b.started_at) - new Date(a.started_at));
   if (!items.length) {
-    list.innerHTML = `<div class="empty">${icon("check-circle")}<b>${view.filter === "new" ? "Новых событий нет" : "Событий пока нет"}</b></div>`;
+    list.innerHTML = view.clearedAt
+      ? `<div class="empty">${icon("check-circle")}<b>Лента очищена</b><span>Новые события появятся здесь. Все события — в журнале.</span>
+          <button class="btn btn-sm" data-unclear>${icon("undo")}Показать скрытые</button></div>`
+      : `<div class="empty">${icon("check-circle")}<b>${view.filter === "new" ? "Новых событий нет" : "Событий пока нет"}</b></div>`;
+    const unclear = $("[data-unclear]", list);
+    if (unclear) unclear.onclick = () => setCleared(null);
     return;
   }
   list.innerHTML = items.map((ev) => {
@@ -437,18 +478,22 @@ function renderEvents() {
         : `<div class="no-frame">Кадр недоступен</div>`}</div>
       <div class="ev-title">${esc(label("scenario", ev.scenario_type))}</div>
       <div class="ev-meta">${esc(ev.source_name || "удалённая камера")}${src?.site ? ` · ${esc(src.site)}` : ""}${ev.state === "active" ? " · идёт" : ""}</div>
-      ${sel ? `<button class="btn btn-primary btn-block ev-watch" data-watch>${icon("play-circle")}Смотреть эпизод</button>` : ""}
+      ${ev.emergency_at ? `<div class="ev-meta" style="color:#ff8585">${icon("phone")} Службы вызваны: ${esc(ev.emergency_service)}</div>` : ""}
+      ${sel ? `<button class="btn btn-primary btn-block ev-watch" data-watch>${icon("play-circle")}Смотреть эпизод</button>
+        <button class="btn btn-emergency btn-block ev-watch" data-sos>${icon("phone")}Вызвать экстренные службы</button>` : ""}
     </div>`;
   }).join("");
   for (const card of $$(".ev-card", list)) {
     const id = card.dataset.id;
     card.onclick = (e) => {
-      if (e.target.closest("[data-menu]") || e.target.closest("[data-watch]")) return;
+      if (e.target.closest("[data-menu]") || e.target.closest("[data-watch]") || e.target.closest("[data-sos]")) return;
       view.selected = id;
       renderEvents();
     };
     const watch = $("[data-watch]", card);
     if (watch) watch.onclick = () => openEvent(id);
+    const sos = $("[data-sos]", card);
+    if (sos) sos.onclick = () => openEmergency(view.events.get(id));
     $("[data-menu]", card).onclick = (e) => {
       e.stopPropagation();
       const ev = view.events.get(id);
@@ -459,6 +504,39 @@ function renderEvents() {
     };
   }
   hydrateIcons(list);
+}
+
+function setCleared(value) {
+  view.clearedAt = value;
+  store("eventsClearedAt", value);
+  renderEvents();
+}
+
+// «Очистить» ленту: карточки уходят, события отмечаются просмотренными (счётчик «новых» = 0).
+// Из журнала ничего не удаляется.
+async function clearFeed() {
+  try {
+    await api.viewAll(state.site || undefined);
+  } catch (err) {
+    return toastError(err);
+  }
+  for (const ev of view.events.values()) ev.viewed_at ||= new Date().toISOString();
+  setCleared(new Date().toISOString());
+  refreshUnviewed();
+  toast("Лента очищена — события остаются в журнале", "success", {
+    timeout: 5000, action: { label: "Вернуть", run: () => setCleared(null) },
+  });
+}
+
+// «Скрыть» ленту: панель сворачивается в узкую полосу, камеры занимают всю ширину.
+function setEventsHidden(hidden) {
+  view.eventsHidden = hidden;
+  store("eventsHidden", hidden);
+  $(".monitor")?.classList.toggle("events-hidden", hidden);
+  requestAnimationFrame(() => {
+    applyLayout();
+    for (const cell of view.cells) cell?.stage.resize();
+  });
 }
 
 // Камера события — в ячейку и раскрыть; если её нет в сетке — в первую ячейку.
@@ -482,13 +560,18 @@ function loop(now) {
 export function initMonitoring(root) {
   view.root = root;
   root.innerHTML = `
-    <div class="monitor">
+    <div class="monitor ${view.eventsHidden ? "events-hidden" : ""}">
       <div class="monitor-main" id="cam-area">
         <div class="panel monitor-bar" id="monitor-bar"></div>
         <div class="cam-grid" id="cam-grid"></div>
       </div>
       <aside class="panel events-panel" aria-label="События">
-        <div class="events-head"><h2>События</h2><span class="badge badge-count" id="events-new" hidden></span></div>
+        <button class="events-rail" id="events-show" title="Показать ленту событий">${icon("chevrons-left")}
+          <span class="badge badge-count" id="events-rail-count" hidden></span><span class="rail-text">События</span></button>
+        <div class="events-head"><h2>События</h2><span class="badge badge-count" id="events-new" hidden></span>
+          <span class="events-tools">
+            <button class="icon-btn" id="events-clear" title="Очистить ленту (события останутся в журнале)">${icon("trash")}</button>
+            <button class="icon-btn" id="events-hide" title="Скрыть ленту событий">${icon("chevrons-right")}</button></span></div>
         <div class="events-tabs"><button data-filter="all">Все</button><button data-filter="new">Новые</button></div>
         <div class="events-list" id="events-list"></div>
         <button class="events-all" id="events-all">${icon("list")}Все события${icon("chevron-right")}</button>
@@ -496,6 +579,11 @@ export function initMonitoring(root) {
     </div>`;
   for (const b of $$("[data-filter]", root)) b.onclick = () => { view.filter = b.dataset.filter; loadEvents(); };
   $("#events-all").onclick = () => emit("open-journal", { site: state.site });
+  $("#events-clear").onclick = clearFeed;
+  $("#events-hide").onclick = () => setEventsHidden(true);
+  $("#events-show").onclick = () => setEventsHidden(false);
+  on("events-cleared", () => { view.events.clear(); renderEvents(); });
+  on("event-deleted", (id) => { view.events.delete(id); renderEvents(); });
   document.addEventListener("click", (e) => {
     const pop = $("#grid-pop");
     if (pop && !e.target.closest(".grid-picker")) pop.hidden = true;

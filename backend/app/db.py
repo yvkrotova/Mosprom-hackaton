@@ -17,7 +17,10 @@ class Base(DeclarativeBase):
     pass
 
 
-def make_engine(database_url: str) -> Engine:
+def make_engine(database_url: str, *, foreign_keys: bool = True) -> Engine:
+    """foreign_keys=False — только для миграций: SQLite меняет таблицы пересозданием
+    (CREATE new → копия → DROP old), и со включёнными внешними ключами DROP старой таблицы каскадно
+    удалил бы зоны, правила, кадры и историю, которые ссылаются на неё (ON DELETE CASCADE)."""
     url = make_url(database_url)
     if url.get_backend_name() != "sqlite":
         return create_engine(database_url, pool_pre_ping=True)
@@ -29,7 +32,8 @@ def make_engine(database_url: str) -> Engine:
     @event.listens_for(engine, "connect")
     def _sqlite_pragmas(dbapi_conn, _record):
         cur = dbapi_conn.cursor()
-        cur.execute("PRAGMA foreign_keys=ON")  # иначе SQLite игнорирует ON DELETE CASCADE
+        # Иначе SQLite игнорирует ON DELETE CASCADE. Для миграций — выключены (см. выше).
+        cur.execute(f"PRAGMA foreign_keys={'ON' if foreign_keys else 'OFF'}")
         cur.execute("PRAGMA journal_mode=WAL")  # backend и чтение не блокируют друг друга
         cur.close()
 

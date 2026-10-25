@@ -659,3 +659,46 @@ replay: `recorded_inference_ms_avg/p50/p95` (историческое время
   работать — его следующие эпизоды появятся как новые.
 - Интерфейс оценки — только «Подтверждено» / «Ложное срабатывание»; «передано мастеру» и приоритет в
   интерфейсе не показываются (`escalated` из старых данных отображается как «Подтверждено»).
+
+## Аналитика, демо-история, надёжное удаление (2026-10-25)
+
+### Удаление
+- `DELETE /events/{id}` → `204` (`404 EVENT_NOT_FOUND`) — одно событие с кадрами и историей. WS: `event.deleted` `{id}`.
+- Удалённые события получают «надгробие» (`deleted_events`): обновление этого эпизода от идущего анализа
+  (`PUT /internal/events/{id}`) → `200 {"outcome": "deleted"}`, событие **не** создаётся заново.
+
+### `GET /analytics/overview?days=7|14|30&supervisor=&tz_offset_min=`
+Период — последние N дней по местному времени (смещение передаёт браузер) до текущего момента. Инцидент
+относится к начальнику смены, если начался во время его смены на её участке (смена без участка — все
+камеры). Нарушение — инцидент, кроме `false_positive`. Реальные и демо-события считаются вместе.
+```json
+{"days": 14, "from": "…", "to": "…", "supervisor": null,
+ "summary": {"total", "violations", "prev_total", "change", "top_zone": {…горячая точка…},
+             "best_supervisor": {…строка рейтинга…}, "confirmed", "rated", "confirmed_share", "demo"},
+ "daily": [{"date": "2026-10-24", "from", "to", "total", "by_scenario": {"danger_zone": 3},
+            "confirmed", "false_positive", "unreviewed", "supervisors": ["Иванов И.И."],
+            "by_supervisor": {"Иванов И.И.": 3}}],
+ "supervisors": [{"rank", "supervisor", "shifts", "hours", "incidents", "per_shift", "confirmed",
+                  "false_positive", "unreviewed", "active_now", "safety_index", "trend", "trend_change", "badge"}],
+ "hotspots": {"zones": [{"zone_id", "name", "source_name", "site", "count", "share", "top_scenario",
+                         "confirmed", "risk"}], "cameras": [{"source_id", "name", "site", …}]}}
+```
+- `supervisor` фильтрует только `daily`. `change` — к такому же предыдущему периоду (`null`, если там 0).
+- `safety_index` = 100·(1 − нарушений на смену / (2·среднее по команде)), 0..100; средний ≈ 50.
+- `trend`: `improving` / `worsening`, если частота нарушений между половинами периода изменилась ≥ 30% и
+  ≥ 0,75 на смену; иначе `stable`. `badge`: `leader` (1-е место и индекс ≥ 70), `risk` (индекс < 35).
+- Меньше 3 смен в периоде — `rank: null` (в рейтинг не ставится, в конце списка).
+- Горячие точки: `share` — доля от нарушений периода; `risk`: `high` (≥ 25% или ≥ 2 в день), `medium`
+  (≥ 10% или ≥ 0,7 в день), иначе `low`.
+
+### Демо-история
+- `POST /demo/history?days=30&tz_offset_min=180` → `{"days", "shifts", "events", "sources"}`: 4 демо-камеры
+  (`Source.is_demo`), смены 5 начальников по 12 ч (`Shift.is_demo`), инциденты (`model_version =
+  "demo-history"`). Повторный вызов заменяет прежнюю демо-историю; реальные смены не перекрываются.
+- `DELETE /demo/history` → `{"events", "shifts", "sources"}` — только демо-данные.
+- Демо-камеру нельзя запустить: `422 DEMO_SOURCE`. `Source.is_demo` и `Shift.is_demo` — в ответах API.
+
+### Миграции SQLite
+Миграции выполняются с выключенными внешними ключами (`make_engine(..., foreign_keys=False)`): SQLite
+меняет таблицы пересозданием, и со включёнными ключами DROP старой таблицы каскадно удалял бы зоны,
+правила, кадры и историю. Тест `test_upgrade_keeps_related_rows`.

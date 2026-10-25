@@ -64,7 +64,7 @@ def _parse_metadata(model: type[M], raw: str) -> M:
 def upsert_event(
     event_id: EventId, payload: EventUpsert, response: Response, db: DbSession, hub: HubDep
 ) -> EventUpsertResult:
-    outcome, _ = event_service.upsert_event(db, hub, event_id, payload)
+    outcome, _ = event_service.upsert_event(db, hub, event_id, payload)  # deleted — отклонено
     if outcome == UpsertOutcome.CREATED:
         response.status_code = status.HTTP_201_CREATED
     return EventUpsertResult(event_id=event_id, outcome=outcome)

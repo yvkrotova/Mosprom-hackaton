@@ -20,7 +20,11 @@ export const state = {
 };
 
 // Участки — из реальных источников (поле site), без захардкоженных значений.
-export const sites = () => [...new Set(state.sources.map((s) => s.site).filter(Boolean))].sort();
+export const sites = () => [...new Set(liveSources().map((s) => s.site).filter(Boolean))].sort();
+
+// Камеры с видео: демо-камеры генератора истории (is_demo) не показываются там, где их можно
+// было бы запустить («Мониторинг», «Камеры и зоны») — у них нет видео.
+export const liveSources = () => state.sources.filter((s) => !s.is_demo);
 
 export async function refreshUnviewed() {
   try {

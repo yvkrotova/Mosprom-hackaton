@@ -19,10 +19,14 @@ export function h(html) {
 export const LABELS = {
   scenario: {}, // заполняется из GET /scenarios (setScenarios) — сценарии во фронте не перечисляются
   state: { active: "Продолжается", ended: "Завершён" },
-  review: { unreviewed: "Не проверено", confirmed: "Подтверждено", false_positive: "Ложное", escalated: "Передано мастеру" },
+  // escalated (старые данные «передано мастеру») показывается как подтверждённое.
+  review: { unreviewed: "Не оценено", confirmed: "Подтверждено", false_positive: "Ложное", escalated: "Подтверждено" },
   priority: { low: "Низкий", medium: "Средний", high: "Высокий", critical: "Критический" },
   status: { idle: "Не запускалась", running: "Подключена", stopped: "Остановлена", error: "Ошибка", disconnected: "Нет связи" },
-  action: { confirm: "Подтвердил нарушение", mark_false: "Отметил ложным", escalate: "Передал мастеру", comment: "Комментарий", reset: "Сбросил проверку" },
+  action: {
+    confirm: "Подтвердил нарушение", mark_false: "Отметил ложным", escalate: "Передал мастеру", comment: "Комментарий",
+    reset: "Сбросил проверку", emergency: "Вызвал экстренные службы",
+  },
 };
 
 export const label = (group, key) => LABELS[group]?.[key] ?? key ?? "—";
@@ -31,6 +35,24 @@ export const label = (group, key) => LABELS[group]?.[key] ?? key ?? "—";
 const REVIEW_PILL = { unreviewed: "pill-amber", confirmed: "pill-green", escalated: "pill-green", false_positive: "pill-gray" };
 export const reviewPill = (status, cls = "") => `<span class="pill ${REVIEW_PILL[status] || "pill-gray"} ${cls}">${esc(label("review", status))}</span>`;
 export const statePill = (st, cls = "") => `<span class="pill ${st === "active" ? "pill-red" : "pill-blue"} ${cls}">${esc(label("state", st))}</span>`;
+
+// Оценка оператора: confirmed (в т. ч. «передано мастеру») | false | none — для подсветки строки.
+export const verdictOf = (status) =>
+  status === "false_positive" ? "false" : status === "confirmed" || status === "escalated" ? "confirmed" : "none";
+
+// Две кнопки оценки в один клик; нажатая — текущая оценка. data-verdict ловит обработчик экрана.
+export function verdictControl(ev, { large = false, busy = false } = {}) {
+  const v = verdictOf(ev.review_status);
+  const ok = "Подтверждено";
+  return `<div class="verdict ${large ? "verdict-lg" : ""} ${busy ? "busy" : ""}" data-verdict-for="${esc(ev.id)}">
+    ${v === "none" ? `<span class="v-state">Не оценено</span>` : ""}
+    <div class="v-btns" role="group" aria-label="Оценка оператора">
+      <button type="button" class="v-btn v-ok ${v === "confirmed" ? "on" : ""}" data-verdict="confirmed" aria-pressed="${v === "confirmed"}" ${busy ? "disabled" : ""}
+        title="Нарушение подтверждено">${icon("check")}${ok}</button>
+      <button type="button" class="v-btn v-bad ${v === "false" ? "on" : ""}" data-verdict="false_positive" aria-pressed="${v === "false"}" ${busy ? "disabled" : ""}
+        title="Ложное срабатывание">${icon("x")}${large ? "Ложное срабатывание" : "Ложное"}</button>
+    </div></div>`;
+}
 
 // Среда выполнения по фактическому detector_kind. Replay (…_replay) — предзаписанные результаты.
 export const isLinq = (kind) => typeof kind === "string" && kind.startsWith("linq");

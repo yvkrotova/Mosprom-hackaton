@@ -52,20 +52,11 @@ function renderUser() {
   $("#user-btn .user-name").textContent = state.operator;
 }
 
-function setTheme(theme) {
-  document.documentElement.dataset.theme = theme;
-  store("theme", theme);
-  emit("theme", theme);
-}
-
 function openSettings() {
   const s = sound.settings;
-  const theme = document.documentElement.dataset.theme;
   const { root, close } = openModal(`
     <h3 class="modal-title">${icon("settings")}Настройки</h3>
     <div class="stack">
-      <div class="field"><span>Тема оформления</span>
-        <div class="seg"><button data-theme="dark" class="${theme !== "light" ? "active" : ""}">Тёмная</button><button data-theme="light" class="${theme === "light" ? "active" : ""}">Светлая</button></div></div>
       <label class="field"><span>Имя оператора (подписывает действия проверки)</span><input class="input" name="operator" maxlength="100" value="${esc(state.operator)}" /></label>
       <label class="field"><span>Громкость уведомлений</span><input type="range" min="0" max="1" step="0.05" name="volume" value="${s.volume}" /></label>
       <label class="status-line"><span>Сигнал при входе человека в зону (до подтверждения)</span><span class="switch"><input type="checkbox" name="entryChime" ${s.entryChime ? "checked" : ""} /><span class="knob"></span></span></label>
@@ -74,9 +65,6 @@ function openSettings() {
       <button class="btn" data-test>${icon("volume-2")}Проверить звук</button>
     </div>
     <div class="modal-actions"><button class="btn btn-primary" data-ok>Готово</button></div>`);
-  for (const b of $$("[data-theme]", root)) {
-    b.onclick = () => { setTheme(b.dataset.theme); for (const x of $$("[data-theme]", root)) x.classList.toggle("active", x === b); };
-  }
   $("input[name=volume]", root).oninput = (e) => sound.set({ volume: Number(e.target.value) });
   for (const key of ["entryChime", "voice", "repeat"]) $(`input[name=${key}]`, root).onchange = (e) => sound.set({ [key]: e.target.checked });
   $("[data-test]", root).onclick = () => sound.test();
@@ -113,9 +101,23 @@ function updateTitle() {
 
 function onEventsMessage(msg) {
   const { type, data } = msg;
-  if (type.startsWith("event.")) {
+  if (type === "event.deleted") {
+    emit("event-deleted", data.id);
+    refreshUnviewed();
+  } else if (type.startsWith("event.")) {
     emit("event", data);
     if (type === "event.created") { onAlarm(data); refreshUnviewed(); }
+    if (type === "event.emergency") {
+      // Все операторы видят, что службы уже вызваны (не звонят повторно).
+      toast(`Вызваны экстренные службы: ${data.emergency_service} · ${data.source_name || ""} · ${data.emergency_by || ""}`, "alarm", {
+        timeout: 12000, action: { label: "Открыть событие", run: () => openEvent(data.id) },
+      });
+    }
+  } else if (type === "events.cleared") {
+    emit("events-cleared", data);
+    refreshUnviewed();
+  } else if (type === "events.viewed") {
+    refreshUnviewed();
   } else if (type === "source.status") {
     patchSource({ id: data.id, status: data.status, last_error: data.last_error, last_heartbeat_at: data.last_heartbeat_at });
     if (data.status === "error") toast(`${data.name}: ошибка анализа — ${data.last_error || "без описания"}`, "error", { timeout: 12000 });
@@ -134,7 +136,8 @@ async function pollHealth() {
 
 // --- Добавление камеры --------------------------------------------------------------------------
 
-function openAddCamera() {
+// stay — добавили из «Камер и зон»: остаёмся там (анализ новой камеры виден в редакторе).
+function openAddCamera(opts = {}) {
   const { root, close } = openModal(`
     <h3 class="modal-title">${icon("plus")}Добавить камеру</h3>
     <div class="stack">
@@ -177,8 +180,10 @@ function openAddCamera() {
       selectSource(src.id);
       const running = src.status === "running";
       toast(`Камера «${src.name}» добавлена${running ? ", анализ запущен" : ""}. Зоны настраиваются в разделе «Камеры и зоны».`, "success", { timeout: 6000 });
-      emit("show-camera", src.id);
-      showTab("live");
+      if (!opts?.stay) {
+        emit("show-camera", src.id);
+        showTab("live");
+      }
     } catch (err) {
       toastError(err);
       $("[data-ok]", root).disabled = false;

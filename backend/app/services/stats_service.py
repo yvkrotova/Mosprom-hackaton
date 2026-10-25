@@ -75,6 +75,11 @@ def _demo(session: Session, conds, source_id: str | None) -> DemoFlag:
     )
     if mock_events:
         return DemoFlag(is_demo=True, reason="события получены заглушкой детектора (mock)")
+    history = session.scalar(
+        select(func.count()).select_from(Event).where(*conds, Event.model_version == "demo-history")
+    )
+    if history:
+        return DemoFlag(is_demo=True, reason="в периоде есть сгенерированная демо-история")
     q = select(ProcessingStat.detector_kind).where(ProcessingStat.detector_kind == "mock")
     if source_id:
         q = q.where(ProcessingStat.source_id == source_id)

@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import Index, String
+from sqlalchemy import Boolean, Index, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
@@ -18,3 +18,4 @@ class Shift(IdMixin, TimestampMixin, Base):
     site: Mapped[str | None] = mapped_column(String(200))
     started_at: Mapped[datetime] = mapped_column(UtcDateTime)
     ended_at: Mapped[datetime | None] = mapped_column(UtcDateTime)  # null — смена идёт
+    is_demo: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")

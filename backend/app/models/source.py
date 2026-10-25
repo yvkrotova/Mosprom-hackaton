@@ -33,6 +33,8 @@ class Source(IdMixin, TimestampMixin, Base):
     video_fingerprint: Mapped[str | None] = mapped_column(String(64))
     # Начало последнего запуска анализа — к нему относятся замеры и задержки в /metrics.
     run_started_at: Mapped[datetime | None] = mapped_column(UtcDateTime)
+    # Демо-камера из генератора истории (POST /demo/history): видео нет, анализ не запускается.
+    is_demo: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
 
     zones: Mapped[list["Zone"]] = relationship(
         back_populates="source", cascade="all, delete-orphan", passive_deletes=True

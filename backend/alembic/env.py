@@ -32,7 +32,8 @@ def run_offline() -> None:
 
 
 def run_online() -> None:
-    engine: Engine = make_engine(_database_url())
+    # Внешние ключи выключены: пересоздание таблиц в SQLite не должно каскадно удалять данные.
+    engine: Engine = make_engine(_database_url(), foreign_keys=False)
     with engine.connect() as connection:
         _configure(connection=connection)
         with context.begin_transaction():

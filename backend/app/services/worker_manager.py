@@ -104,6 +104,12 @@ class WorkerManager:
             raise ConflictError(
                 "Анализ источника уже запущен", code="SOURCE_ALREADY_RUNNING", source_id=source.id
             )
+        if source.is_demo:
+            raise UnprocessableError(
+                "Демо-камера из генератора истории: видео у неё нет, анализ не запускается",
+                code="DEMO_SOURCE",
+                source_id=source.id,
+            )
         if source.kind == SourceKind.IMAGES:
             raise UnprocessableError(
                 "Источники kind=images пока не поддерживаются",

@@ -25,6 +25,7 @@ class ShiftOut(ApiModel):
     site: str | None
     started_at: UtcDatetime
     ended_at: UtcDatetime | None
+    is_demo: bool = False
     created_at: UtcDatetime
 
 

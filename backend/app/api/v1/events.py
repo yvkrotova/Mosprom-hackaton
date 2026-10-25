@@ -108,6 +108,16 @@ def clear_events(db: DbSession, hub: HubDep, settings: SettingsDep) -> dict:
     return {"deleted": event_service.clear_all(db, hub, settings.storage_dir)}
 
 
+@router.delete(
+    "/events/{event_id}",
+    status_code=204,
+    summary="Удалить одно событие (с историей и кадрами)",
+)
+def delete_event(event_id: str, db: DbSession, hub: HubDep, settings: SettingsDep) -> Response:
+    event_service.delete_event(db, hub, event_id, settings.storage_dir)
+    return Response(status_code=204)
+
+
 @router.post(
     "/events/view-all",
     summary="Очистить ленту: отметить все непросмотренные события просмотренными",

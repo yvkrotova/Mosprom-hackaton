@@ -70,6 +70,7 @@ class WsMessageType(StrEnum):
     EVENT_REVIEWED = "event.reviewed"
     EVENT_EMERGENCY = "event.emergency"
     EVENTS_CLEARED = "events.cleared"
+    EVENT_DELETED = "event.deleted"
     EVENTS_VIEWED = "events.viewed"
     SOURCE_STATUS = "source.status"
 
@@ -81,6 +82,7 @@ class UpsertOutcome(StrEnum):
     UPDATED = "updated"
     UNCHANGED = "unchanged"
     ENDED = "ended"
+    DELETED = "deleted"  # событие удалено оператором — обновление отклонено
 
 
 # Действие оператора -> (из каких статусов разрешено, в какой статус переводит).

@@ -3,12 +3,12 @@
 // сервере. Новые события не сбрасывают фильтры и страницу. Фильтры живут в localStorage.
 import { api } from "./api.js";
 import { mediaUrl } from "./config.js";
-import { openEvent } from "./event-modal.js";
+import { openEvent, rate } from "./event-modal.js";
 import { hydrateIcons, icon } from "./icons.js";
 import { on, sourceById, state } from "./state.js";
 import {
-  $, $$, episodeSeconds, esc, fmtDate, fmtDuration, fmtHM, fmtTime, fromLocalInput, label, plural,
-  reviewPill, statePill, stored, store, toLocalInput, toast, toastError,
+  $, $$, confirmModal, episodeSeconds, esc, fmtDate, fmtDuration, fmtHM, fmtTime, fromLocalInput, label, plural,
+  statePill, stored, store, toLocalInput, toast, toastError, verdictControl, verdictOf,
 } from "./util.js";
 
 const PAGE = 10;
@@ -97,6 +97,7 @@ function renderShell(root) {
       <div><h1>Журнал нарушений</h1><p>История событий и результаты проверки</p></div>
       <div class="head-actions">
         <button class="btn btn-outline-primary" id="jr-csv">${icon("download")}Скачать CSV</button>
+        <button class="btn btn-danger" id="jr-clear" title="Удалить все события журнала">${icon("trash")}Очистить всё</button>
         <span class="updated" id="jr-updated"></span>
       </div>
     </div>
@@ -116,8 +117,7 @@ function renderShell(root) {
       <label class="field"><span>Состояние эпизода</span><select class="select" data-f="state">
         <option value="">Любое</option><option value="active">${label("state", "active")}</option><option value="ended">${label("state", "ended")}</option></select></label>
       <label class="field"><span>Проверка оператора</span><select class="select" data-f="review_status">
-        <option value="">Любая</option><option value="unreviewed">Не проверено</option><option value="confirmed">Подтверждено (включая переданные мастеру)</option>
-        <option value="escalated">Передано мастеру</option><option value="false_positive">Ложное</option></select></label>
+        <option value="">Любая</option><option value="unreviewed">Не оценено</option><option value="confirmed">Подтверждено</option><option value="false_positive">Ложное</option></select></label>
     </div>
     <div class="panel table-panel">
       <div class="table-head"><b id="jr-total"></b>
@@ -146,6 +146,7 @@ function renderShell(root) {
   $("#jr-reset").onclick = () => { jr.filters = initialFilters(); jr.order = "desc"; changed(); };
   $("#jr-sort").onclick = () => { jr.order = jr.order === "desc" ? "asc" : "desc"; changed(); };
   $("#jr-csv").onclick = exportCsv;
+  $("#jr-clear").onclick = clearJournal;
 }
 
 // Дата: применяется только корректная, «По» не раньше «С» — иначе пояснение у поля.
@@ -238,31 +239,67 @@ function renderBody() {
     return;
   }
   body.innerHTML = `<div class="table-wrap"><table class="table">
-    <thead><tr><th>Кадр</th><th>Начало</th><th>Камера / зона</th><th>Нарушение</th><th>Длительность</th><th>Уверенность</th><th>Состояние</th><th>Проверка</th><th></th></tr></thead>
+    <thead><tr><th>Кадр</th><th>Начало</th><th>Камера / зона</th><th>Нарушение</th><th>Длительность</th><th>Уверенность</th><th>Состояние</th><th>Оценка оператора</th><th></th></tr></thead>
     <tbody>${page.items.map(row).join("")}</tbody></table></div>`;
   for (const tr of $$("tbody tr", body)) {
-    tr.onclick = () => {
-      jr.selected = tr.dataset.id;
-      for (const r of $$("tbody tr", body)) r.classList.toggle("selected", r === tr);
-      openEvent(tr.dataset.id);
+    tr.onclick = (e) => {
+      const cur = e.currentTarget; // строка могла быть перерисована после оценки
+      const btn = e.target.closest("[data-verdict]");
+      if (btn) return onVerdict(cur.dataset.id, btn.dataset.verdict, btn);
+      jr.selected = cur.dataset.id;
+      for (const r of $$("#jr-body tbody tr")) r.classList.toggle("selected", r === cur);
+      openEvent(cur.dataset.id);
     };
   }
   renderPager();
   scroller.scrollTop = keepScroll;
 }
 
+// Оценка в один клик: строка меняется сразу (оптимистично), при ошибке — возвращается как было.
+const busy = new Set();
+async function onVerdict(id, verdict, btn) {
+  if (btn.classList.contains("on") || busy.has(id)) return;
+  const items = jr.page?.items || [];
+  const i = items.findIndex((x) => x.id === id);
+  if (i < 0) return;
+  const before = items[i];
+  busy.add(id);
+  items[i] = { ...before, review_status: verdict };
+  replaceRow(items[i]);
+  const updated = await rate(id, verdict);
+  busy.delete(id);
+  const j = jr.page.items.findIndex((x) => x.id === id);
+  if (j >= 0) {
+    jr.page.items[j] = updated ? { ...jr.page.items[j], ...updated } : before;
+    replaceRow(jr.page.items[j]);
+  }
+  // Фильтр «Проверка оператора» мог исключить строку — пересчитаем выборку тихо.
+  if (updated && jr.filters.review_status) scheduleRefresh();
+}
+
+function replaceRow(e) {
+  const tr = $(`#jr-body tr[data-id="${e.id}"]`);
+  if (!tr) return;
+  const tmp = document.createElement("tbody");
+  tmp.innerHTML = row(e);
+  const fresh = tmp.firstElementChild;
+  fresh.onclick = tr.onclick;
+  tr.replaceWith(fresh);
+}
+
 function row(e) {
   const zone = e.zone_name || (e.zone_id ? "удалённая зона" : "Весь кадр");
   const cam = e.source_name || "удалённая камера";
-  return `<tr data-id="${e.id}" class="${e.id === jr.selected ? "selected" : ""}">
+  const rv = { confirmed: "rv-confirmed", false: "rv-false", none: "rv-none" }[verdictOf(e.review_status)];
+  return `<tr data-id="${e.id}" class="${rv} ${e.id === jr.selected ? "selected" : ""}">
     <td><div class="thumb">${e.thumbnail_url ? `<img src="${esc(mediaUrl(e.thumbnail_url))}" alt="" loading="lazy" />` : "Кадр недоступен"}</div></td>
     <td class="t-date">${fmtDate(e.started_at)}<br>${fmtTime(e.started_at)}</td>
     <td class="t-cam"><b class="ellipsis" title="${esc(cam)}">${esc(cam)}</b><span class="ellipsis" title="${esc(zone)}">${esc(zone)}</span></td>
-    <td>${esc(label("scenario", e.scenario_type))}</td>
+    <td>${esc(label("scenario", e.scenario_type))}${e.emergency_at ? `<div class="sub" style="color:#ff8585" title="${esc(e.emergency_service)}">${icon("phone")} Вызваны службы</div>` : ""}</td>
     <td class="nowrap" ${e.state === "active" ? `data-live-duration="${e.id}"` : ""}>${fmtDuration(liveSeconds(e))}</td>
     <td>${Math.round(e.confidence * 100)}%</td>
     <td>${statePill(e.state)}</td>
-    <td>${reviewPill(e.review_status)}</td>
+    <td>${verdictControl(e, { busy: busy.has(e.id) })}</td>
     <td><span class="row-go" aria-hidden="true">${icon("chevron-right")}</span></td></tr>`;
 }
 
@@ -290,6 +327,35 @@ function renderPager() {
     ${html}<button data-page="${current + 1}" ${current === pages ? "disabled" : ""}>Вперёд ${icon("arrow-right")}</button></div>`;
   for (const b of $$("[data-page]", $("#jr-pager"))) {
     b.onclick = () => { jr.offset = (Number(b.dataset.page) - 1) * PAGE; load(); $("#content").scrollTop = 0; };
+  }
+}
+
+// «Очистить всё»: удаляет ВСЕ события (не только отфильтрованные) с историей и кадрами. Необратимо.
+async function clearJournal() {
+  let total = null;
+  try {
+    total = (await api.events({ limit: 1 })).total;
+  } catch { /* число не обязательно */ }
+  if (total === 0) return toast("Журнал уже пуст", "info", { timeout: 2000 });
+  const ok = await confirmModal(
+    "Очистить журнал?",
+    `Будут удалены все события${total != null ? ` (${total})` : ""} — независимо от фильтров, вместе с кадрами и историей оценок. `
+      + "Отменить это нельзя. Скачайте CSV заранее, если данные нужны.",
+    { okLabel: "Удалить все события" },
+  );
+  if (!ok) return;
+  const btn = $("#jr-clear");
+  btn.disabled = true;
+  try {
+    const { deleted } = await api.clearEvents();
+    jr.offset = 0;
+    jr.selected = null;
+    await load();
+    toast(`Журнал очищен: удалено ${deleted} ${plural(deleted, "событие", "события", "событий")}`, "success", { timeout: 3500 });
+  } catch (err) {
+    toastError(err);
+  } finally {
+    btn.disabled = false;
   }
 }
 
@@ -332,6 +398,15 @@ export function initJournal(root) {
   on("loaded", () => { renderControls(); if (jr.visible) load(); });
   on("sources", renderControls);
   on("zones", renderControls);
+  on("events-cleared", () => { jr.page = null; jr.offset = 0; if (jr.visible) load(); });
+  // Удалённое событие пропадает из таблицы сразу, затем выборка и счётчик пересчитываются.
+  on("event-deleted", (id) => {
+    if (!jr.page) return;
+    jr.page.items = jr.page.items.filter((e) => e.id !== id);
+    jr.page.total = Math.max(0, jr.page.total - 1);
+    renderBody();
+    if (jr.visible) scheduleRefresh();
+  });
   on("event", (ev) => {
     const items = jr.page?.items;
     const i = items?.findIndex((e) => e.id === ev.id) ?? -1;

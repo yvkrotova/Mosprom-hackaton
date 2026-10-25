@@ -45,6 +45,7 @@ class SourceOut(ApiModel):
     replay_path: str | None = Field(None, description="Привязанная запись детекций (replay)")
     video_sha256: str | None = Field(None, description="SHA-256 видеофайла (если посчитан)")
     run_started_at: UtcDatetime | None = Field(None, description="Начало последнего запуска")
+    is_demo: bool = Field(False, description="Демо-камера генератора истории (без видео)")
     created_at: UtcDatetime
     updated_at: UtcDatetime
 
