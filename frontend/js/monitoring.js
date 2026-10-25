@@ -472,7 +472,7 @@ function renderEvents() {
     const sel = ev.id === view.selected;
     return `<div class="ev-card ${sel ? "selected" : ""}" data-id="${ev.id}">
       <div class="ev-top"><span class="ev-time">${fmtHM(ev.started_at)}</span>
-        ${ev.viewed_at ? `<span class="badge badge-seen">Просмотрено</span>` : `<span class="badge badge-new">Новое</span>`}
+        ${ev.viewed_at ? `<span class="pill pill-gray pill-sm">Просмотрено</span>` : `<span class="pill pill-blue pill-sm">Новое</span>`}
         <button class="menu-btn ev-menu" data-menu title="Действия">${icon("more-vertical")}</button></div>
       <div class="ev-thumb">${ev.thumbnail_url ? `<img src="${esc(mediaUrl(ev.thumbnail_url))}" alt="Кадр нарушения" loading="lazy" />`
         : `<div class="no-frame">Кадр недоступен</div>`}</div>
