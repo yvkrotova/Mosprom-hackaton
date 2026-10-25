@@ -14,7 +14,6 @@ import cv2
 import numpy as np
 
 from app.config import Settings
-from app.pipeline.annotate import annotate_frame
 from app.pipeline.backend_client import BackendClient
 from app.pipeline.detectors import build_detector, detector_kind_for
 from app.pipeline.detectors.replay import ReplayDetector
@@ -267,19 +266,8 @@ def run_worker(
 
         def on_frame(frame: Frame, result: FrameResult) -> None:
             meta = frame_meta(frame, result, pipeline.stats.fps, detector.kind)
-
-            annotated = annotate_frame(
-                image=frame.image,
-                width=frame.width,
-                height=frame.height,
-                zones=config.zones,
-                tracks=result.tracks,
-                violator_track_id=None,
-                violation_zone_id=None,
-                caption_lines=[],
-            )
-
-            live.submit(meta, annotated)
+            # Кадр уходит без рамок: зоны и треки рисует интерфейс поверх видео по meta.
+            live.submit(meta, frame.image)
 
         pipeline.run(frames, should_stop=stop_event.is_set, on_frame=on_frame)
         logger.info(

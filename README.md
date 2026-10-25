@@ -230,6 +230,6 @@ npm run check                                                             # си
   позвонил.
 
 > Логины, пароли и адреса (VPN, Jupyter, LinQ) хранятся только в `backend/.env`, который в `.gitignore`.
-> Известное исключение, которое надо убрать: `backend/bridge_update/linq_bridge_server.py` (сервер-мост для
-> Jupyter) содержит адрес сервиса LinQ, стандартные учётные данные RabbitMQ и путь с логином Jupyter.
-> Их стоит вынести в переменные окружения.
+> Сервер-мост для Jupyter (`backend/bridge_update/linq_bridge_server.py`) тоже берёт адрес RabbitMQ, логин,
+> пароль и путь программы из переменных окружения (`LINQ_AMQP_HOST`, `LINQ_LOGIN`, `LINQ_PASSWORD`,
+> `LINQ_PROGRAM`) — см. `backend/bridge_update/README.txt`. Резервные копии `.env*` в git не попадают.

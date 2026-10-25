@@ -23,9 +23,21 @@ from tpu_pycloud_format import (
 )
 
 cv2.setNumThreads(1)
-PROGRAM = Path(
-    "/auto/cache/hackathon76167/compiled_video_4frames_20261024_150456_yolov8s_video4_b1_o1_h1m.tpu"
-)
+
+
+def _env(name, default=None):
+    """Адрес, учётные данные и путь программы — только из окружения, не из кода."""
+    value = os.environ.get(name, default)
+    if not value:
+        raise SystemExit(f"Не задана переменная окружения {name} (см. bridge_update/README.txt)")
+    return value
+
+
+PROGRAM = Path(_env("LINQ_PROGRAM"))
+AMQP_HOST = _env("LINQ_AMQP_HOST")
+AMQP_PORT = int(_env("LINQ_AMQP_PORT", "5672"))
+AMQP_LOGIN = _env("LINQ_LOGIN")
+AMQP_PASSWORD = _env("LINQ_PASSWORD")
 NAMES = {0: "person", 2: "car", 3: "motorcycle", 5: "bus", 7: "truck"}
 
 
@@ -46,9 +58,9 @@ class TPU:
             if self.connection is None or not self.connection.is_open:
                 self.connection = pika.BlockingConnection(
                     pika.ConnectionParameters(
-                        host="10.0.114.30",
-                        port=5672,
-                        credentials=pika.PlainCredentials("guest", "guest"),
+                        host=AMQP_HOST,
+                        port=AMQP_PORT,
+                        credentials=pika.PlainCredentials(AMQP_LOGIN, AMQP_PASSWORD),
                         socket_timeout=10,
                         stack_timeout=20,
                         blocked_connection_timeout=20,

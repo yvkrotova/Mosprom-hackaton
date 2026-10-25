@@ -31,7 +31,7 @@
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -r requirements-linq.txt
 .\.venv\Scripts\python.exe -c "import pika; import tpu_pycloud_format; print('OK')"
-Test-NetConnection 10.0.114.30 -Port 5672
+Test-NetConnection <адрес-RabbitMQ-LinQ> -Port 5672
 ```
 
 Если нет tpu_pycloud_format, получите клиентский пакет (wheel) из материалов
@@ -74,15 +74,15 @@ TcpTestSucceeded должен быть True. Если False — включите
 в существующем backend/.env; не оставляйте дубликаты одинаковых ключей:
 
 ```dotenv
-LINQ_API_URL=amqp://10.0.114.30:5672/
-LINQ_LOGIN=guest
-LINQ_PASSWORD=guest
-LINQ_PROGRAM=/auto/cache/hackathon76167/compiled_video_4frames_20261024_150456_yolov8s_video4_b1_o1_h1m.tpu
+LINQ_API_URL=amqp://<адрес-RabbitMQ-LinQ>:5672/
+LINQ_LOGIN=<логин RabbitMQ>
+LINQ_PASSWORD=<пароль RabbitMQ>
+LINQ_PROGRAM=/auto/cache/<пользователь>/<программа>.tpu
 LINQ_TIMEOUT_S=60
 MODEL_INPUT_SIZE=640
 ```
 
-guest/guest — данные RabbitMQ из примера организаторов, не пароль Jupyter.
+Логин и пароль RabbitMQ — из материалов организаторов (это не пароль Jupyter); в репозиторий их не кладите.
 LINQ_PROGRAM — серверная копия, созданная проверочным скриптом при сравнении видео.
 Она отличается от исходного пути в /home/... . Windows не должен читать этот файл:
 путь передаётся воркеру LinQ в file://...?... .
@@ -90,7 +90,7 @@ LINQ_PROGRAM — серверная копия, созданная провер�
 Если серверная копия потеряна, в Jupyter выполните:
 
 ```bash
-cp /home/hackathon76167/work/linq_yolov8s/compiled_video_4frames_20261024_150456/yolov8s_video4_b1_o1_h1m.tpu /auto/cache/hackathon76167/compiled_video_4frames_20261024_150456_yolov8s_video4_b1_o1_h1m.tpu
+cp ~/work/linq_yolov8s/<каталог компиляции>/<программа>.tpu /auto/cache/<пользователь>/<программа>.tpu
 ```
 
 ## 4. Проверка перед включением на сайте
