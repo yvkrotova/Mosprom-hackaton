@@ -73,6 +73,10 @@ class Settings(BaseSettings):
 
     log_level: str = "INFO"
 
+    # Экстренные службы для кнопки оператора: «номер:название» через «;». Система не звонит сама —
+    # показывает номера (ссылки tel:) и фиксирует, кто и куда звонил по событию.
+    emergency_contacts: str = "112:Единая служба спасения;101:Пожарная охрана;103:Скорая помощь"
+
     # LinQ: только адреса и имена, значения — исключительно в .env.
     linq_api_url: str = ""
     linq_login: str = ""
@@ -81,6 +85,15 @@ class Settings(BaseSettings):
     linq_bridge_url: str = ""
     linq_jupyter_token: str = ""
     linq_timeout_s: float = Field(default=60.0, gt=0, le=300)
+
+    @property
+    def emergency_contact_list(self) -> list[dict[str, str]]:
+        out = []
+        for item in self.emergency_contacts.split(";"):
+            number, _, name = item.partition(":")
+            if number.strip():
+                out.append({"number": number.strip(), "name": name.strip() or number.strip()})
+        return out
 
     @property
     def cors_origin_list(self) -> list[str]:

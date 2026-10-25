@@ -5,17 +5,19 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Query, Response
 
-from app.api.deps import DbSession, HubDep
+from app.api.deps import DbSession, HubDep, SettingsDep
 from app.errors import UnprocessableError
 from app.models.base import as_utc
 from app.schemas.enums import EpisodeState, Priority, ReviewStatus, ScenarioType
 from app.schemas.events import (
     EventDetail,
+    EventFeedback,
     EventOut,
     EventPage,
     OperatorActionCreate,
     UnviewedCounts,
 )
+from app.schemas.shifts import EmergencyCall
 from app.services import event_service, rule_service
 from app.services.event_service import EventFilters
 
@@ -98,6 +100,22 @@ def export_events(
     )
 
 
+@router.delete(
+    "/events",
+    summary="Очистить журнал: удалить ВСЕ события с историей и кадрами (необратимо)",
+)
+def clear_events(db: DbSession, hub: HubDep, settings: SettingsDep) -> dict:
+    return {"deleted": event_service.clear_all(db, hub, settings.storage_dir)}
+
+
+@router.post(
+    "/events/view-all",
+    summary="Очистить ленту: отметить все непросмотренные события просмотренными",
+)
+def view_all_events(db: DbSession, hub: HubDep, site: str | None = None) -> dict:
+    return {"viewed": event_service.view_all(db, hub, site)}
+
+
 @router.get(
     "/events/unviewed", response_model=UnviewedCounts, summary="Непросмотренные: всего и по камерам"
 )
@@ -108,6 +126,31 @@ def unviewed(db: DbSession, site: str | None = None) -> UnviewedCounts:
 @router.get("/events/{event_id}", response_model=EventDetail, summary="Карточка события")
 def get_event(event_id: str, db: DbSession) -> EventDetail:
     return event_service.event_to_detail(db, event_service.get_event(db, event_id))
+
+
+@router.post(
+    "/events/{event_id}/feedback",
+    response_model=EventDetail,
+    summary="Оценка оператора в один клик: подтверждено или ложное срабатывание",
+)
+def event_feedback(event_id: str, body: EventFeedback, db: DbSession, hub: HubDep) -> EventDetail:
+    detail, _changed = event_service.set_feedback(
+        db, hub, event_id, body.verdict, body.author, body.comment
+    )
+    return detail
+
+
+@router.post(
+    "/events/{event_id}/emergency",
+    response_model=EventDetail,
+    summary="Зафиксировать вызов экстренных служб по событию (приоритет — критический)",
+)
+def call_emergency(
+    event_id: str, body: EmergencyCall, db: DbSession, hub: HubDep, settings: SettingsDep
+) -> EventDetail:
+    return event_service.call_emergency(
+        db, hub, event_id, body.number, body.author, body.comment, settings.emergency_contact_list
+    )
 
 
 @router.post(

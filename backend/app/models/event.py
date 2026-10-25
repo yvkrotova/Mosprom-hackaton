@@ -41,6 +41,10 @@ class Event(IdMixin, TimestampMixin, Base):
     alerts_sent: Mapped[int] = mapped_column(Integer, default=0)
     # Оператор открыл событие (лента «Новые»). Не связано с review_status.
     viewed_at: Mapped[datetime | None] = mapped_column(UtcDateTime)
+    # Экстренные службы: первый вызов по событию (кто и куда). Все вызовы — в operator_actions.
+    emergency_at: Mapped[datetime | None] = mapped_column(UtcDateTime)
+    emergency_service: Mapped[str | None] = mapped_column(String(100))
+    emergency_by: Mapped[str | None] = mapped_column(String(100))
 
     model_version: Mapped[str] = mapped_column(String(200))
     rule_id: Mapped[str | None] = mapped_column(String(36))

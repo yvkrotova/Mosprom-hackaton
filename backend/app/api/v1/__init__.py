@@ -2,8 +2,8 @@
 
 from fastapi import APIRouter
 
-from app.api.v1 import events, rules, sources, stats, zones
+from app.api.v1 import events, rules, shifts, sources, stats, zones
 
 api_router = APIRouter(prefix="/api/v1")
-for module in (sources, zones, rules, events, stats):
+for module in (sources, zones, rules, events, stats, shifts):
     api_router.include_router(module.router)

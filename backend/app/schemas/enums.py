@@ -32,6 +32,8 @@ class OperatorActionType(StrEnum):
     ESCALATE = "escalate"
     COMMENT = "comment"
     RESET = "reset"
+    # Вызов экстренных служб: проверку не меняет, пишется в историю (POST /events/{id}/emergency).
+    EMERGENCY = "emergency"
 
 
 class Priority(StrEnum):
@@ -66,6 +68,9 @@ class WsMessageType(StrEnum):
     EVENT_UPDATED = "event.updated"
     EVENT_ENDED = "event.ended"
     EVENT_REVIEWED = "event.reviewed"
+    EVENT_EMERGENCY = "event.emergency"
+    EVENTS_CLEARED = "events.cleared"
+    EVENTS_VIEWED = "events.viewed"
     SOURCE_STATUS = "source.status"
 
 

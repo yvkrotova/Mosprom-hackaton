@@ -1,6 +1,6 @@
 """Журнал событий: эпизоды нарушений, доказательства, действия оператора."""
 
-from typing import Any, Self
+from typing import Any, Literal, Self
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -86,6 +86,9 @@ class EventOut(ApiModel):
         "null — видео нет (поток или файл недоступен), см. video_note",
     )
     video_note: str | None = Field(None, description="Почему видео эпизода недоступно")
+    emergency_at: UtcDatetime | None = Field(None, description="Первый вызов экстренных служб")
+    emergency_service: str | None = Field(None, description="Куда звонили: «112 — Единая служба…»")
+    emergency_by: str | None = Field(None, description="Кто вызвал")
     evidence: list[EvidenceOut]
     created_at: UtcDatetime
     updated_at: UtcDatetime
@@ -108,6 +111,14 @@ class UnviewedCounts(BaseModel):
     by_source: list[SourceCount]
 
 
+class EventFeedback(InputModel):
+    """Оценка оператора в один клик: нарушение подтверждено или ложное срабатывание."""
+
+    verdict: Literal["confirmed", "false_positive"]
+    author: str = Field(min_length=1, max_length=100, examples=["Иванова А.С."])
+    comment: str | None = Field(None, max_length=2000)
+
+
 class OperatorActionCreate(InputModel):
     action: OperatorActionType
     comment: str | None = Field(None, max_length=2000)
@@ -117,4 +128,6 @@ class OperatorActionCreate(InputModel):
     def _comment_required(self) -> Self:
         if self.action == OperatorActionType.COMMENT and not (self.comment or "").strip():
             raise ValueError("для action=comment нужен непустой comment")
+        if self.action == OperatorActionType.EMERGENCY:
+            raise ValueError("вызов экстренных служб — POST /events/{id}/emergency")
         return self

@@ -246,3 +246,27 @@ def test_layout_saved_atomically(client, make_source):
                          "scenario_types": ["danger_zone"]}]})  # fmt: skip
     assert [z["name"] for z in ok.json()["zones"]] == ["Переименована"]
     assert [z["id"] for z in ok.json()["zones"]] == [keep]
+
+
+def test_clear_journal_and_view_all(app, client, settings, make_source, make_event):
+    src = make_source(site="Склад")
+    other = make_source("Камера 2", site="Цех")
+    a = make_event(src, T)
+    make_event(other, T)
+    evidence = settings.storage_dir / "evidence" / a / "frame.jpg"
+    evidence.parent.mkdir(parents=True)
+    evidence.write_bytes(b"jpg")
+    from app.models import Evidence
+
+    with app.state.session_factory() as s:
+        s.add(Evidence(event_id=a, kind="frame_annotated", path=f"evidence/{a}/frame.jpg",
+                       url=f"/media/evidence/{a}/frame.jpg"))  # fmt: skip
+        s.commit()
+    # «Очистить» ленту участка: только просмотр, события остаются.
+    assert client.post("/api/v1/events/view-all", params={"site": "Склад"}).json() == {"viewed": 1}
+    assert client.get("/api/v1/events/unviewed").json()["total"] == 1
+    assert client.get("/api/v1/events").json()["total"] == 2
+    # «Очистить всё» в журнале: события, история и файлы кадров удалены.
+    assert client.delete("/api/v1/events").json() == {"deleted": 2}
+    assert client.get("/api/v1/events").json()["total"] == 0
+    assert not evidence.exists() and not evidence.parent.exists()

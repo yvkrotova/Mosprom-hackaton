@@ -2,6 +2,7 @@
 
 import csv
 import io
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -10,13 +11,14 @@ from sqlalchemy import ColumnElement, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
-from app.errors import ConflictError, NotFoundError
+from app.errors import ConflictError, NotFoundError, UnprocessableError
 from app.models import Event, OperatorAction, Source, Zone
 from app.models.base import as_utc, utcnow
 from app.schemas.enums import (
     REVIEW_TRANSITIONS,
     EpisodeState,
     EvidenceKind,
+    OperatorActionType,
     Priority,
     ReviewStatus,
     ScenarioType,
@@ -130,6 +132,78 @@ def mark_viewed(session: Session, hub: WsHub, event_id: str) -> EventOut:
     return event_to_out(session, event)
 
 
+def call_emergency(
+    session: Session,
+    hub: WsHub,
+    event_id: str,
+    number: str,
+    author: str,
+    comment: str | None,
+    contacts: list[dict[str, str]],
+) -> EventDetail:
+    """Оператор позвонил в экстренную службу по событию. Система сама не звонит: фиксирует факт
+    (история действий, первый вызов в событии), поднимает приоритет до критического и рассылает
+    event.emergency всем операторам. Проверку (review_status) не меняет."""
+    event = get_event(session, event_id)
+    contact = next((c for c in contacts if c["number"] == number), None)
+    if contact is None:
+        raise UnprocessableError(
+            "Такой службы нет в списке EMERGENCY_CONTACTS", code="UNKNOWN_EMERGENCY_SERVICE",
+            number=number, available=[c["number"] for c in contacts],
+        )  # fmt: skip
+    service = f"{contact['number']} — {contact['name']}"
+    now = utcnow()
+    if event.emergency_at is None:
+        event.emergency_at, event.emergency_service, event.emergency_by = now, service, author
+    event.priority = Priority.CRITICAL
+    event.actions.append(
+        OperatorAction(
+            action=OperatorActionType.EMERGENCY,
+            prev_status=event.review_status,
+            new_status=event.review_status,
+            comment=f"Вызов: {service}"
+            + (f". {comment.strip()}" if comment and comment.strip() else ""),
+            author=author,
+            created_at=now,
+        )
+    )
+    session.commit()
+    publish_event(session, hub, WsMessageType.EVENT_EMERGENCY, event)
+    return event_to_detail(session, event)
+
+
+def view_all(session: Session, hub: WsHub, site: str | None = None) -> int:
+    """«Очистить» ленту на главной: все непросмотренные события (участка) — просмотренными.
+    Проверку не меняет и события не удаляет. Возвращает, сколько отмечено."""
+    conds = filter_conditions(EventFilters(site=site, viewed=False))
+    events = session.scalars(select(Event).where(*conds)).all()
+    now = utcnow()
+    for event in events:
+        event.viewed_at = now
+    session.commit()
+    if events:
+        hub.publish(WsMessageType.EVENTS_VIEWED, {"site": site, "count": len(events)})
+    return len(events)
+
+
+def clear_all(session: Session, hub: WsHub, storage_dir: Path) -> int:
+    """«Очистить всё» в журнале: удаляет все события вместе с историей проверки и кадрами-
+    доказательствами (файлы тоже). Необратимо. Анализ, если идёт, продолжает работать: его
+    следующие эпизоды появятся в журнале как новые."""
+    events = session.scalars(select(Event).options(selectinload(Event.evidence))).all()
+    files = [storage_dir / ev.path for event in events for ev in event.evidence]
+    for event in events:
+        session.delete(event)  # история действий и записи доказательств — каскадом
+    session.commit()
+    for path in files:
+        path.unlink(missing_ok=True)
+    for folder in {p.parent for p in files}:
+        with suppress(OSError):
+            folder.rmdir()  # пустая папка события
+    hub.publish(WsMessageType.EVENTS_CLEARED, {"count": len(events)})
+    return len(events)
+
+
 def unviewed_counts(session: Session, site: str | None = None) -> dict:
     """Непросмотренные события: всего и по камерам (участок — необязательный фильтр)."""
     conds = filter_conditions(EventFilters(site=site, viewed=False))
@@ -231,6 +305,36 @@ def apply_action(
     session.commit()
     publish_event(session, hub, WsMessageType.EVENT_REVIEWED, event)
     return event_to_detail(session, event)
+
+
+def set_feedback(
+    session: Session, hub: WsHub, event_id: str, verdict: str, author: str, comment: str | None
+) -> tuple[EventDetail, bool]:
+    """Оценка оператора в один клик. Любой статус → «подтверждено» или «ложное» одним действием
+    (без промежуточного «сброса»); «передано мастеру» уже подтверждено — повторное «подтверждено»
+    его не снимает. Повтор той же оценки ничего не меняет. Возвращает (событие, изменилось ли)."""
+    event = get_event(session, event_id)
+    current = ReviewStatus(event.review_status)
+    target = ReviewStatus(verdict)
+    if current == target or (target == ReviewStatus.CONFIRMED and current in CONFIRMED_STATUSES):
+        return event_to_detail(session, event), False
+    event.review_status = target
+    event.actions.append(
+        OperatorAction(
+            action=(
+                OperatorActionType.CONFIRM
+                if target == ReviewStatus.CONFIRMED
+                else OperatorActionType.MARK_FALSE
+            ),
+            prev_status=current,
+            new_status=target,
+            comment=comment,
+            author=author,
+        )
+    )
+    session.commit()
+    publish_event(session, hub, WsMessageType.EVENT_REVIEWED, event)
+    return event_to_detail(session, event), True
 
 
 def get_event(session: Session, event_id: str) -> Event:
