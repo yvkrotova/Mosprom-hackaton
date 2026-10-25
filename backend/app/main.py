@@ -27,6 +27,17 @@ from app.services.worker_manager import WorkerManager
 
 logger = logging.getLogger(__name__)
 
+
+class FrontendFiles(StaticFiles):
+    """Файлы интерфейса: браузер перепроверяет их при каждой загрузке (ETag → 304, если не
+    менялись) — после обновления кода не нужен Ctrl+F5, иначе он показывал бы старые стили."""
+
+    def file_response(self, *args, **kwargs):
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 # Windows часто не знает шрифт woff2 и видео mp4 — без типа браузер может их не принять.
 mimetypes.add_type("font/woff2", ".woff2")
 mimetypes.add_type("video/mp4", ".mp4")
@@ -111,7 +122,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # Фронтенд на корне сайта — последним, чтобы не перекрывать API.
     frontend = settings.frontend_dir
     if frontend and (frontend / "index.html").is_file():
-        app.mount("/", StaticFiles(directory=frontend, html=True), name="frontend")
+        app.mount("/", FrontendFiles(directory=frontend, html=True), name="frontend")
     else:
         logger.info("Фронтенд не найден (%s) — отдаётся только API", frontend)
     return app

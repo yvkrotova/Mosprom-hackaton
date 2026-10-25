@@ -143,7 +143,9 @@ def _check_frontend(client):
     assert r.status_code == 200 and "LinQ Видеоконтроль" in r.text
     font = client.get("/fonts/inter-cyrillic-wght-normal.woff2")
     assert "font/woff2" in font.headers["content-type"]
-    assert "javascript" in client.get("/js/app.js").headers["content-type"]
+    js = client.get("/js/app.js")
+    assert "javascript" in js.headers["content-type"]
+    assert js.headers["cache-control"] == "no-cache"  # после обновления кода — без Ctrl+F5
     # API и его единый формат ошибок фронтенд не перекрывает.
     r = client.get("/api/v1/nope")
     assert r.status_code == 404 and r.json()["error"]["code"] == "NOT_FOUND"

@@ -456,7 +456,12 @@ textarea.input { height: auto; padding: 10px 14px; resize: vertical; }
 .zone-row.invalid { border-color: var(--red); }
 .form-row { display: grid; grid-template-columns: 100px minmax(0, 1fr); align-items: center; gap: 12px; }
 .form-row > span { font-size: 15px; color: var(--text-2); }
-.form-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.form-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+/* Кнопки делят ширину панели поровну и не вылезают за её край: при нехватке места текст переносится */
+.form-actions .btn {
+  min-width: 0; height: auto; min-height: 42px; padding: 6px 10px; gap: 6px; font-size: 14px;
+  white-space: normal; line-height: 1.2; text-align: center;
+}
 
 /* --- Статистика -------------------------------------------------------------------------- */
 .kpis { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
